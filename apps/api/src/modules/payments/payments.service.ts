@@ -948,7 +948,7 @@ export class PaymentsService {
         ct.apellidos,
         ct.email,
         ct.telefono,
-        ISNULL(b.ciclo, N'8vo ciclo') AS ciclo,
+        ISNULL(pa.ciclo, N'8vo ciclo') AS ciclo,
         ISNULL(u.nombre, N'Universidad Nacional de Trujillo') AS universidad_nombre,
         ISNULL(ca.nombre, N'Ingeniería de Sistemas') AS carrera_nombre,
         ISNULL((
@@ -978,8 +978,9 @@ export class PaymentsService {
       INNER JOIN INBESTIGA_TESIS.dbo.LEAD l ON l.lead_id = pr.lead_id
       INNER JOIN INBESTIGA_TESIS.dbo.BUYER b ON b.buyer_id = l.buyer_id
       INNER JOIN INBESTIGA_TESIS.dbo.CONTACTO ct ON ct.contacto_id = b.contacto_id
-      LEFT JOIN INBESTIGA_TESIS.dbo.UNIVERSIDAD u ON u.universidad_id = b.universidad_id
-      LEFT JOIN INBESTIGA_TESIS.dbo.CARRERA ca ON ca.carrera_id = b.carrera_id
+      LEFT JOIN INBESTIGA_TESIS.dbo.PERFIL_ACADEMICO pa ON pa.contacto_id = ct.contacto_id
+      LEFT JOIN INBESTIGA_TESIS.dbo.CARRERA ca ON ca.carrera_id = pa.carrera_id
+      LEFT JOIN INBESTIGA_TESIS.dbo.UNIVERSIDAD u ON u.universidad_id = ca.universidad_id
       LEFT JOIN INBESTIGA_TESIS.dbo.CUOTA_PAGO cp ON cp.cuota_id = pg.cuota_id
       WHERE ${conds.join(' AND ')}
       ORDER BY CASE WHEN op.codigo_orden = 'ORD-2026-0042' THEN 0 ELSE 1 END, pg.pago_id DESC;
