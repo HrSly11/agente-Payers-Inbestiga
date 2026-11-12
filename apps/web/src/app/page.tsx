@@ -1,4 +1,4 @@
-'use client';
+﻿'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
@@ -30,6 +30,7 @@ import {
   AcademicReactiveAssistant,
   ThesisJourneyTrack,
 } from '@/components/payers/ThesisInteractiveWidgets';
+import { InteractiveThesisStage } from '@/components/payers/InteractiveThesisStage';
 
 const QUICK_PROMPTS = [
   '¿Cuál es mi siguiente cuota y cuándo debería pagar?',
@@ -64,6 +65,7 @@ export default function PayersCommandCenterPage() {
     null,
   );
   const [celebrateCounter, setCelebrateCounter] = useState<number>(0);
+  const [activeStageId, setActiveStageId] = useState<number>(2);
 
   // Live Chat Stream State
   const [chatInput, setChatInput] = useState<string>('');
@@ -600,6 +602,8 @@ export default function PayersCommandCenterPage() {
           onSelectCuotaHighlight={setActiveCuotaHighlight}
           isSectionFocused={activePipelineStage === 'RUTA_TESIS'}
           onTriggerCelebration={() => setCelebrateCounter((c) => c + 1)}
+          externalStageId={activeStageId}
+          onStageChange={setActiveStageId}
         />
       </section>
 
@@ -608,244 +612,43 @@ export default function PayersCommandCenterPage() {
           ===================================================================== */}
       <section className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
         {/* COLUMNA IZQUIERDA (7 COLS): STREAM CONVERSACIONAL EN VIVO CON EL AGENTE IA + ASISTENTE ACADÉMICO REACTIVO */}
+        {/* COLUMNA IZQUIERDA (7 COLS): ESCENA 3D INTERACTIVA DE TESIS (el chat completo vive en /admin/payers/live-chat) */}
         <div
           id="seccion-chat"
-          className={`lg:col-span-7 glass-panel rounded-3xl border flex flex-col justify-between overflow-hidden transition-all duration-300 ${
+          className={`lg:col-span-7 flex flex-col gap-3 rounded-3xl transition-all duration-300 ${
             activePipelineStage === 'CHAT'
-              ? 'border-sky-500 ring-2 ring-sky-500/35 shadow-lg shadow-sky-500/10'
-              : 'border-slate-200/80 dark:border-slate-800/90'
+              ? 'ring-2 ring-sky-500/40 shadow-lg shadow-sky-500/10'
+              : ''
           }`}
         >
-          {/* Header de la Consola del Agente + Asistente Académico Reactivo (Feature 2) */}
-          <div className="px-5 py-4 border-b border-slate-200/80 dark:border-slate-800/80 bg-slate-50/60 dark:bg-slate-950/60 flex flex-wrap items-center justify-between gap-3">
-            <div className="flex items-center gap-3">
-              <div className="relative">
-                <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-emerald-500 to-teal-600 text-white flex items-center justify-center shadow-md shadow-emerald-500/25 animate-pulse-glow">
-                  <Bot className="w-5 h-5" />
-                </div>
-                <span className="absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full bg-emerald-400 border-2 border-white dark:border-slate-950" />
-              </div>
-              <div>
-                <div className="flex items-center gap-2 flex-wrap">
-                  <h2 className="text-sm sm:text-base font-black text-slate-900 dark:text-white">
-                    Stream Bidireccional del Agente IA PAYERS
-                  </h2>
-                  <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30">
-                    Sincronizado con Telegram
-                  </span>
-                </div>
-                <p className="text-xs text-slate-500 dark:text-slate-400">
-                  Cliente activo:{' '}
-                  <strong className="text-slate-800 dark:text-slate-200">
-                    {nombreEstudiante}
-                  </strong>{' '}
-                  ({codigoOrdenActual})
-                </p>
-              </div>
-            </div>
-
-            <div className="flex items-center gap-2.5 flex-wrap">
-              {/* Feature 2: Asistente Académico Reactivo (Tesis / Birrete / Pluma viva) */}
-              <AcademicReactiveAssistant
-                isThinking={chatSending}
-                celebrateTrigger={celebrateCounter}
-                hasConfirmedPayment={tienePagoConfirmado}
-                studentName={nombreEstudiante.split(' ')[0]}
-                compact
-              />
-
-              <Link
-                href={`/admin/payers/live-chat?orden=${selectedOrdenId}`}
-                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-200/80 hover:bg-slate-300 dark:bg-slate-800 dark:hover:bg-slate-700 text-xs font-bold text-slate-800 dark:text-slate-200 transition-colors"
-              >
-                <MessageSquare className="w-3.5 h-3.5 text-emerald-500" />
-                <span>Pantalla Completa</span>
-                <ArrowRight className="w-3 h-3" />
-              </Link>
-            </div>
-          </div>
-
-          {/* Historial de Mensajes en Vivo (con burbujas animadas) */}
-          <div
-            ref={chatScrollRef}
-            className="flex-1 p-5 space-y-3.5 overflow-y-auto max-h-[370px] min-h-[300px] bg-gradient-to-b from-transparent to-slate-50/40 dark:to-slate-950/40"
-          >
-            {mensajes.length === 0 ? (
-              <div className="h-full flex flex-col items-center justify-center text-center py-12 text-slate-400 space-y-2">
-                <Bot className="w-8 h-8 text-emerald-500/60 animate-float-slow" />
-                <p className="text-xs font-semibold">
-                  No hay mensajes previos en esta orden. Selecciona un prompt rápido abajo para iniciar la conversación.
-                </p>
-              </div>
-            ) : (
-              mensajes.map((m: any, idx: number) => {
-                const esCliente =
-                  m.emisor === 'ESTUDIANTE' || m.emisor === 'CLIENTE';
-                return (
-                  <div
-                    key={m.mensaje_id || idx}
-                    className={`flex items-start gap-2.5 animate-message-pop ${
-                      esCliente ? 'justify-end' : 'justify-start'
-                    }`}
-                  >
-                    {!esCliente && (
-                      <div className="w-7 h-7 rounded-xl bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 flex items-center justify-center shrink-0 mt-0.5">
-                        <Bot className="w-4 h-4" />
-                      </div>
-                    )}
-
-                    <div
-                      className={`max-w-[82%] rounded-2xl px-4 py-2.5 text-xs leading-relaxed shadow-xs ${
-                        esCliente
-                          ? 'bg-emerald-600 text-white rounded-br-sm'
-                          : 'bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 text-slate-800 dark:text-slate-100 rounded-bl-sm'
-                      }`}
-                    >
-                      <div className="flex items-center justify-between gap-3 mb-1 text-[10px] opacity-75 font-mono">
-                        <span>
-                          {esCliente ? nombreEstudiante : 'Agente IA PAYERS'}
-                        </span>
-                        <span>
-                          {m.fecha_hora
-                            ? new Date(m.fecha_hora).toLocaleTimeString([], {
-                                hour: '2-digit',
-                                minute: '2-digit',
-                              })
-                            : 'Ahora'}
-                        </span>
-                      </div>
-                      <p className="whitespace-pre-line">{m.contenido}</p>
-                    </div>
-
-                    {esCliente && (
-                      <div className="w-7 h-7 rounded-xl bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300 flex items-center justify-center shrink-0 mt-0.5">
-                        <User className="w-4 h-4" />
-                      </div>
-                    )}
-                  </div>
-                );
-              })
-            )}
-
-            {/* Chip de prompt rápido que viaja con transición física de resorte al stream */}
-            <AnimatePresence>
-              {activePromptChip && (
-                <motion.div
-                  layoutId={`prompt-${activePromptChip}`}
-                  initial={{ opacity: 0, y: 18, scale: 0.92 }}
-                  animate={{ opacity: 1, y: 0, scale: 1 }}
-                  exit={{ opacity: 0, scale: 0.95 }}
-                  transition={{ type: 'spring', stiffness: 260, damping: 20 }}
-                  className="flex justify-end"
-                >
-                  <div className="rounded-2xl rounded-br-sm bg-emerald-600/90 text-white px-4 py-2 text-xs font-semibold shadow-md">
-                    {activePromptChip}
-                  </div>
-                </motion.div>
-              )}
-            </AnimatePresence>
-
-            {chatSending && (
-              <div className="flex items-center gap-2.5 text-xs text-emerald-600 dark:text-emerald-400 font-semibold animate-pulse">
-                <div className="w-7 h-7 rounded-xl bg-emerald-500/20 flex items-center justify-center">
-                  <Activity className="w-4 h-4 animate-spin" />
-                </div>
-                <span>
-                  Ejecutando herramientas determinísticas y consultando contexto SQL Server...
-                </span>
-              </div>
-            )}
-          </div>
-
-          {/* Barra Inferior: Bloques Encastrables de Tools + Prompts Rápidos con Spring + Input */}
-          <div className="p-4 border-t border-slate-200/80 dark:border-slate-800/80 bg-white/80 dark:bg-slate-900/80 space-y-3">
-            {/* Bloques Encastrables de Herramientas (Interlocking Tool Blocks) */}
-            <AnimatePresence>
-              {recentTools.length > 0 && (
-                <motion.div
-                  initial={{ opacity: 0, y: 6 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: 4 }}
-                  className="flex items-center gap-1.5 flex-wrap text-[11px]"
-                >
-                  <span className="text-slate-400 font-semibold mr-1">
-                    Cadena de Tools ejecutadas:
-                  </span>
-                  {recentTools.map((t, idx) => (
-                    <motion.div
-                      key={`${t}-${idx}`}
-                      initial={
-                        prefersReducedMotion
-                          ? { opacity: 1 }
-                          : { opacity: 0, x: -12, scale: 0.88 }
-                      }
-                      animate={{ opacity: 1, x: 0, scale: 1 }}
-                      transition={{
-                        type: 'spring',
-                        stiffness: 280,
-                        damping: 18,
-                        delay: idx * 0.08,
-                      }}
-                      className="inline-flex items-center gap-1"
-                    >
-                      {idx > 0 && (
-                        <Link2 className="w-3 h-3 text-emerald-500 -mx-0.5" />
-                      )}
-                      <span className="inline-flex items-center gap-1 font-mono text-[10px] px-2.5 py-1 rounded-lg bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/35 shadow-2xs">
-                        <Wrench className="w-3 h-3" />
-                        {t}
-                      </span>
-                    </motion.div>
-                  ))}
-                </motion.div>
-              )}
-            </AnimatePresence>
-
-            {/* Chips de Prompts Rápidos con Físicas de Resorte */}
-            <div className="flex flex-wrap gap-1.5">
-              {QUICK_PROMPTS.map((q) => (
-                <motion.button
-                  key={q}
-                  layoutId={activePromptChip === q ? undefined : `prompt-${q}`}
-                  type="button"
-                  whileHover={
-                    prefersReducedMotion ? undefined : { scale: 1.03, y: -1 }
-                  }
-                  whileTap={prefersReducedMotion ? undefined : { scale: 0.95 }}
-                  transition={{ type: 'spring', stiffness: 320, damping: 18 }}
-                  disabled={chatSending}
-                  onClick={() => handleEnviarPregunta(q)}
-                  className="text-[11px] font-semibold px-2.5 py-1 rounded-xl bg-slate-100 hover:bg-emerald-500/15 hover:text-emerald-700 dark:bg-slate-800/90 dark:hover:bg-emerald-500/20 dark:hover:text-emerald-300 text-slate-700 dark:text-slate-300 border border-slate-200/80 dark:border-slate-700/80 transition-colors cursor-pointer disabled:opacity-50"
-                >
-                  {q}
-                </motion.button>
-              ))}
-            </div>
-
-            <form
-              onSubmit={(e) => {
-                e.preventDefault();
-                handleEnviarPregunta();
-              }}
-              className="flex gap-2"
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <Link
+              href={`/admin/payers/live-chat?orden=${selectedOrdenId}`}
+              className="shimmer-btn inline-flex items-center gap-2 px-4 py-2.5 rounded-2xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs sm:text-sm font-extrabold shadow-md shadow-emerald-600/25 transition-colors"
             >
-              <input
-                type="text"
-                value={chatInput}
-                onChange={(e) => setChatInput(e.target.value)}
-                placeholder={`Escribe un mensaje como ${nombreEstudiante} (${codigoOrdenActual})...`}
-                className="flex-1 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3.5 py-2.5 text-xs text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500 transition-all"
-              />
-              <button
-                type="submit"
-                disabled={chatSending || !chatInput.trim()}
-                className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-extrabold transition-all flex items-center gap-1.5 cursor-pointer shadow-sm shadow-emerald-600/20"
-              >
-                <Zap className="w-3.5 h-3.5" />
-                <span>{chatSending ? 'Procesando...' : 'Enviar'}</span>
-              </button>
-            </form>
+              <MessageSquare className="w-4 h-4" />
+              <span>Abrir Live Chat IA Completo (Telegram + Web)</span>
+              <ArrowRight className="w-4 h-4" />
+            </Link>
+            <AcademicReactiveAssistant
+              isThinking={chatSending}
+              celebrateTrigger={celebrateCounter}
+              hasConfirmedPayment={tienePagoConfirmado}
+              studentName={nombreEstudiante.split(' ')[0]}
+              compact
+            />
           </div>
+
+          <InteractiveThesisStage
+            cuotas={cuotas}
+            activeStageId={activeStageId}
+            onSelectStage={(stageId, cuotaNum) => {
+              setActiveStageId(stageId);
+              setActiveCuotaHighlight(cuotaNum);
+            }}
+            celebrateTrigger={celebrateCounter}
+            studentName={nombreEstudiante.split(' ')[0]}
+          />
         </div>
 
         {/* COLUMNA DERECHA (5 COLS): SWITCHBOARD MULTI-CLIENTE + ANILLO DE PROGRESO ANIMADO + HITOS */}

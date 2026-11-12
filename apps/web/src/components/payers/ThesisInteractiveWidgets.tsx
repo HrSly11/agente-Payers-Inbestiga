@@ -1,4 +1,4 @@
-'use client';
+﻿'use client';
 
 import React, { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
@@ -394,6 +394,8 @@ export interface ThesisJourneyTrackProps {
   onSelectCuotaHighlight?: (numeroCuota: number | null) => void;
   isSectionFocused?: boolean;
   onTriggerCelebration?: () => void;
+  externalStageId?: number | null;
+  onStageChange?: (stageId: number) => void;
 }
 
 const THESIS_CHAPTERS_BASE = [
@@ -439,6 +441,62 @@ const THESIS_CHAPTERS_BASE = [
   },
 ];
 
+export function buildThesisStages(cuotas: any[]): ThesisMilestoneStage[] {
+  const sortedCuotas = [...cuotas].sort(
+    (a, b) => Number(a.numero_cuota) - Number(b.numero_cuota),
+  );
+  const totalC = sortedCuotas.length;
+
+  return THESIS_CHAPTERS_BASE.map((chap, idx) => {
+    let targetCuota: any = null;
+    if (totalC === 1) {
+      targetCuota = sortedCuotas[0];
+    } else if (totalC === 2) {
+      targetCuota = idx < 2 ? sortedCuotas[0] : sortedCuotas[1];
+    } else if (totalC === 3) {
+      if (idx === 0) targetCuota = sortedCuotas[0];
+      else if (idx === 1) {
+        // Etapa 2 comparte progreso entre Cuota 1 pagada y Cuota 2
+        targetCuota =
+          sortedCuotas[0]?.estado === 'PAGADA'
+            ? sortedCuotas[1] || sortedCuotas[0]
+            : sortedCuotas[0];
+      } else if (idx === 2) targetCuota = sortedCuotas[1];
+      else targetCuota = sortedCuotas[2];
+    } else if (totalC > 3) {
+      const mappedIndex = Math.min(
+        totalC - 1,
+        Math.floor((idx / 5) * totalC),
+      );
+      targetCuota = sortedCuotas[mappedIndex];
+    }
+
+    const cuotaNum = Number(targetCuota?.numero_cuota || Math.min(3, Math.ceil((idx + 1) / 2)));
+    const rawEstado = String(targetCuota?.estado || 'ESPERA_HITO');
+
+    let status: 'COMPLETADO' | 'EN_CURSO' | 'BLOQUEADO_HITO' = 'BLOQUEADO_HITO';
+    if (rawEstado === 'PAGADA') {
+      status = 'COMPLETADO';
+    } else if (idx === 1 && sortedCuotas[0]?.estado === 'PAGADA' && totalC >= 3) {
+      // Si la Cuota #1 ya fue pagada, el Capítulo 1 y el arranque del Marco Teórico están habilitados/avanzados
+      status = rawEstado === 'ESPERA_HITO' ? 'EN_CURSO' : 'EN_CURSO';
+    } else if (
+      ['EXIGIBLE', 'ENLACE_ENVIADO', 'POR_VERIFICAR', 'VENCIDA'].includes(rawEstado)
+    ) {
+      status = 'EN_CURSO';
+    } else {
+      status = 'BLOQUEADO_HITO';
+    }
+
+    return {
+      ...chap,
+      linkedCuotaNum: cuotaNum,
+      linkedCuota: targetCuota,
+      status,
+    };
+  });
+}
+
 export function ThesisJourneyTrack({
   cuotas = [],
   ordenDetalle,
@@ -448,9 +506,21 @@ export function ThesisJourneyTrack({
   onSelectCuotaHighlight,
   isSectionFocused = false,
   onTriggerCelebration,
+  externalStageId = null,
+  onStageChange,
 }: ThesisJourneyTrackProps) {
   const prefersReducedMotion = useReducedMotion();
   const [selectedStageId, setSelectedStageId] = useState<number>(1);
+
+  // Sincroniza el capítulo cuando la escena 3D (u otro componente) lo selecciona
+  useEffect(() => {
+    if (externalStageId != null) setSelectedStageId(externalStageId);
+  }, [externalStageId]);
+
+  useEffect(() => {
+    onStageChange?.(selectedStageId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedStageId]);
   const [energyPulseKey, setEnergyPulseKey] = useState<number>(0);
 
   const orden = ordenDetalle?.orden;
@@ -463,61 +533,7 @@ export function ThesisJourneyTrack({
     orden?.codigo_orden || vistaAnalitica?.codigo_orden || 'ORD-2026-0042';
 
   // Mapeo determinístico de los 5 capítulos de tesis con las cuotas reales de la orden
-  const stages: ThesisMilestoneStage[] = useMemo(() => {
-    const sortedCuotas = [...cuotas].sort(
-      (a, b) => Number(a.numero_cuota) - Number(b.numero_cuota),
-    );
-    const totalC = sortedCuotas.length;
-
-    return THESIS_CHAPTERS_BASE.map((chap, idx) => {
-      let targetCuota: any = null;
-      if (totalC === 1) {
-        targetCuota = sortedCuotas[0];
-      } else if (totalC === 2) {
-        targetCuota = idx < 2 ? sortedCuotas[0] : sortedCuotas[1];
-      } else if (totalC === 3) {
-        if (idx === 0) targetCuota = sortedCuotas[0];
-        else if (idx === 1) {
-          // Etapa 2 comparte progreso entre Cuota 1 pagada y Cuota 2
-          targetCuota =
-            sortedCuotas[0]?.estado === 'PAGADA'
-              ? sortedCuotas[1] || sortedCuotas[0]
-              : sortedCuotas[0];
-        } else if (idx === 2) targetCuota = sortedCuotas[1];
-        else targetCuota = sortedCuotas[2];
-      } else if (totalC > 3) {
-        const mappedIndex = Math.min(
-          totalC - 1,
-          Math.floor((idx / 5) * totalC),
-        );
-        targetCuota = sortedCuotas[mappedIndex];
-      }
-
-      const cuotaNum = Number(targetCuota?.numero_cuota || Math.min(3, Math.ceil((idx + 1) / 2)));
-      const rawEstado = String(targetCuota?.estado || 'ESPERA_HITO');
-
-      let status: 'COMPLETADO' | 'EN_CURSO' | 'BLOQUEADO_HITO' = 'BLOQUEADO_HITO';
-      if (rawEstado === 'PAGADA') {
-        status = 'COMPLETADO';
-      } else if (idx === 1 && sortedCuotas[0]?.estado === 'PAGADA' && totalC >= 3) {
-        // Si la Cuota #1 ya fue pagada, el Capítulo 1 y el arranque del Marco Teórico están habilitados/avanzados
-        status = rawEstado === 'ESPERA_HITO' ? 'EN_CURSO' : 'EN_CURSO';
-      } else if (
-        ['EXIGIBLE', 'ENLACE_ENVIADO', 'POR_VERIFICAR', 'VENCIDA'].includes(rawEstado)
-      ) {
-        status = 'EN_CURSO';
-      } else {
-        status = 'BLOQUEADO_HITO';
-      }
-
-      return {
-        ...chap,
-        linkedCuotaNum: cuotaNum,
-        linkedCuota: targetCuota,
-        status,
-      };
-    });
-  }, [cuotas]);
+  const stages: ThesisMilestoneStage[] = useMemo(() => buildThesisStages(cuotas), [cuotas]);
 
   // Seleccionar automáticamente el capítulo en curso cuando cambia la orden
   useEffect(() => {

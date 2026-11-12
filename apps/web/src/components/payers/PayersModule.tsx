@@ -854,15 +854,6 @@ export default function PayersModule({ vista }: { vista: PayersVista }) {
           ========================================================================= */}
       {activeTab === 'BANDEJA_ORDENES' && (
         <div className="space-y-6">
-          {/* Ruta Interactiva de Tesis ("Camino a la Sustentación") para la Orden Seleccionada */}
-          <ThesisJourneyTrack
-            cuotas={ordenDetalle?.cuotas || []}
-            ordenDetalle={ordenDetalle}
-            actionBusy={actionBusy}
-            onToggleHito={handleToggleHito}
-            onTriggerCelebration={() => setCelebrateCounter((c) => c + 1)}
-          />
-
           {/* Sección 2: Tabla Completa de las 104 Órdenes de Pago */}
           <div className="glass-panel p-5 rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 space-y-4">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
