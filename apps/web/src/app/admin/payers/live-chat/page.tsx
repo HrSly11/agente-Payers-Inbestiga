@@ -20,10 +20,11 @@ import {
   Zap,
   CheckCircle2,
   X,
+  BrainCircuit,
 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { SCENARIOS_PRUEBA } from '@/components/payers/PayersModule';
-import { BICognitiveEnginePanel } from '@/components/payers/BICognitiveEnginePanel';
+import { BICognitiveDrawer } from '@/components/payers/BICognitiveEnginePanel';
 
 const FILTROS = [
   { id: 'PENDIENTES', label: 'Pendientes' },
@@ -54,6 +55,7 @@ function PayersLiveChatContent() {
   const [lastGuardrails, setLastGuardrails] = useState<string[]>([]);
   const [lastTools, setLastTools] = useState<any[]>([]);
   const [showMobileList, setShowMobileList] = useState(!ordenParam);
+  const [biDrawerOpen, setBiDrawerOpen] = useState(false);
   const endRef = useRef<HTMLDivElement>(null);
   const sendingRef = useRef(false);
 
@@ -357,7 +359,15 @@ function PayersLiveChatContent() {
                   </div>
                 </div>
 
-                <div className="flex items-center gap-1.5 shrink-0">
+                <div className="flex items-center gap-2 shrink-0 flex-wrap">
+                  <button
+                    type="button"
+                    onClick={() => setBiDrawerOpen(true)}
+                    className="inline-flex items-center gap-1.5 px-3 py-1 rounded-xl text-[11px] font-extrabold bg-slate-900 hover:bg-slate-800 dark:bg-indigo-950/80 dark:hover:bg-indigo-900 text-white border border-indigo-500/40 shadow-xs transition-all cursor-pointer"
+                  >
+                    <BrainCircuit className="w-3.5 h-3.5 text-sky-400" />
+                    <span>🧠 Ver Auditoría BI</span>
+                  </button>
                   <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 hidden sm:inline">
                     Etapa:
                   </span>
@@ -613,9 +623,12 @@ function PayersLiveChatContent() {
         </div>
       </div>
 
-      {activeId != null && detalle && (
-        <BICognitiveEnginePanel ordenDetalle={detalle} selectedOrdenId={activeId} />
-      )}
+      <BICognitiveDrawer
+        open={biDrawerOpen}
+        onClose={() => setBiDrawerOpen(false)}
+        ordenDetalle={detalle}
+        selectedOrdenId={activeId ?? 42}
+      />
     </div>
   );
 }

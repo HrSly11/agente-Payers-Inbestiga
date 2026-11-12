@@ -1,7 +1,7 @@
 'use client';
 
-import React, { useMemo } from 'react';
-import { motion, useReducedMotion } from 'framer-motion';
+import React, { useEffect, useMemo } from 'react';
+import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 import {
   BrainCircuit,
   Database,
@@ -11,10 +11,19 @@ import {
   TrendingUp,
   ShieldCheck,
   Scale,
+  X,
 } from 'lucide-react';
 import { buildThesisStages } from './ThesisInteractiveWidgets';
 
 export interface BICognitiveEnginePanelProps {
+  ordenDetalle: any;
+  selectedOrdenId: number;
+  inDrawer?: boolean;
+}
+
+export interface BICognitiveDrawerProps {
+  open: boolean;
+  onClose: () => void;
   ordenDetalle: any;
   selectedOrdenId: number;
 }
@@ -77,6 +86,7 @@ function evaluateRule(orden: any, cuotas: any[], pagado: number, comprometido: n
 export function BICognitiveEnginePanel({
   ordenDetalle,
   selectedOrdenId,
+  inDrawer = false,
 }: BICognitiveEnginePanelProps) {
   const reduced = useReducedMotion();
 
@@ -219,7 +229,11 @@ export function BICognitiveEnginePanel({
         </span>
       </div>
 
-      <div className="relative z-10 grid grid-cols-1 lg:grid-cols-2 gap-4 p-5">
+      <div
+        className={`relative z-10 grid grid-cols-1 ${
+          inDrawer ? 'gap-4 p-4 sm:p-5' : 'lg:grid-cols-2 gap-4 p-5'
+        }`}
+      >
         {/* 1. Regla de negocio evaluada */}
         <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4 space-y-2">
           <div className="flex items-center gap-2 text-[11px] font-extrabold uppercase tracking-wider text-slate-400">
@@ -319,7 +333,7 @@ export function BICognitiveEnginePanel({
             <TrendingUp className="w-3.5 h-3.5 text-emerald-400" />
             Impacto proyectado · INBESTIGA_MART
           </div>
-          <div className="grid grid-cols-2 gap-2">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
             <div className="rounded-xl bg-slate-950/70 border border-slate-800 p-3">
               <div className="font-mono text-[10px] text-slate-500">P01 Efectividad de Cobranza</div>
               <div className="flex items-baseline gap-1.5 mt-1">
@@ -359,6 +373,103 @@ export function BICognitiveEnginePanel({
         </div>
       </div>
     </section>
+  );
+}
+
+export function BICognitiveDrawer({
+  open,
+  onClose,
+  ordenDetalle,
+  selectedOrdenId,
+}: BICognitiveDrawerProps) {
+  const reduced = useReducedMotion();
+
+  useEffect(() => {
+    if (!open) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [open, onClose]);
+
+  const estudianteNombre =
+    ordenDetalle?.orden?.estudiante_nombre ||
+    ordenDetalle?.vistaAnalitica?.estudiante ||
+    `Orden #${selectedOrdenId}`;
+
+  return (
+    <AnimatePresence>
+      {open && (
+        <>
+          {/* Dark Backdrop */}
+          <motion.div
+            key="bi-drawer-backdrop"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: reduced ? 0 : 0.22 }}
+            onClick={onClose}
+            aria-hidden="true"
+            className="fixed inset-0 bg-black/60 backdrop-blur-xs z-40"
+          />
+
+          {/* Off-Canvas Right Drawer */}
+          <motion.aside
+            key="bi-drawer-panel"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Auditoría Cognitiva y Cerebro BI"
+            initial={{ x: reduced ? 0 : '100%' }}
+            animate={{ x: 0 }}
+            exit={{ x: reduced ? 0 : '100%' }}
+            transition={
+              reduced
+                ? { duration: 0 }
+                : { type: 'spring', stiffness: 300, damping: 30 }
+            }
+            className="fixed inset-y-0 right-0 z-50 w-full max-w-2xl bg-slate-950/95 border-l border-slate-800 backdrop-blur-xl shadow-2xl p-6 overflow-y-auto space-y-5"
+          >
+            {/* Drawer Top Header with Close Button */}
+            <div className="flex items-center justify-between gap-3 pb-4 border-b border-slate-800">
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-indigo-500 via-sky-500 to-emerald-500 flex items-center justify-center text-white shadow-lg shadow-sky-500/20 shrink-0">
+                  <BrainCircuit className="w-5 h-5" />
+                </div>
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-[10px] font-mono font-extrabold uppercase tracking-wider px-2 py-0.5 rounded-full bg-indigo-500/20 text-indigo-300 border border-indigo-500/40">
+                      INSPECTOR COGNITIVO BI · BAJO DEMANDA
+                    </span>
+                  </div>
+                  <h2 className="text-base sm:text-lg font-black text-white truncate mt-0.5">
+                    Auditoría OLTP + Data Mart · {estudianteNombre}
+                  </h2>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={onClose}
+                aria-label="Cerrar panel de auditoría BI"
+                className="p-2 rounded-xl border border-slate-800 bg-slate-900/80 hover:bg-slate-800 text-slate-300 hover:text-white transition-colors cursor-pointer shrink-0"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Full Analytical Content */}
+            <BICognitiveEnginePanel
+              ordenDetalle={ordenDetalle}
+              selectedOrdenId={selectedOrdenId}
+              inDrawer
+            />
+          </motion.aside>
+        </>
+      )}
+    </AnimatePresence>
   );
 }
 

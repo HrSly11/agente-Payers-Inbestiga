@@ -24,6 +24,7 @@ import {
   FileCheck2,
   Zap,
   Link2,
+  BrainCircuit,
 } from 'lucide-react';
 import { api } from '@/lib/api';
 import {
@@ -31,7 +32,7 @@ import {
   ThesisJourneyTrack,
 } from '@/components/payers/ThesisInteractiveWidgets';
 import { InteractiveThesisStage } from '@/components/payers/InteractiveThesisStage';
-import { BICognitiveEnginePanel } from '@/components/payers/BICognitiveEnginePanel';
+import { BICognitiveDrawer } from '@/components/payers/BICognitiveEnginePanel';
 
 const QUICK_PROMPTS = [
   '¿Cuál es mi siguiente cuota y cuándo debería pagar?',
@@ -67,6 +68,7 @@ export default function PayersCommandCenterPage() {
   );
   const [celebrateCounter, setCelebrateCounter] = useState<number>(0);
   const [activeStageId, setActiveStageId] = useState<number>(2);
+  const [biDrawerOpen, setBiDrawerOpen] = useState<boolean>(false);
 
   // Live Chat Stream State
   const [chatInput, setChatInput] = useState<string>('');
@@ -311,6 +313,28 @@ export default function PayersCommandCenterPage() {
 
           {/* Botones de Acción Directa con Efecto Shimmer */}
           <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+            <button
+              type="button"
+              onClick={() => setBiDrawerOpen(true)}
+              className="inline-flex items-center gap-2.5 px-4 py-2.5 rounded-2xl bg-slate-900/90 hover:bg-slate-900 dark:bg-indigo-950/70 dark:hover:bg-indigo-900/80 text-white border border-indigo-500/45 shadow-lg shadow-indigo-500/15 transition-all hover:-translate-y-0.5 cursor-pointer"
+            >
+              <div className="relative flex items-center justify-center">
+                <BrainCircuit className="w-4 h-4 text-sky-400" />
+                <span className="absolute -top-1 -right-1 flex h-2 w-2">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500" />
+                </span>
+              </div>
+              <div className="text-left">
+                <div className="text-xs font-extrabold leading-none">
+                  🧠 Cerebro BI: Auditoría
+                </div>
+                <div className="text-[10px] font-mono text-indigo-200 mt-0.5">
+                  Reglas · Churn · OLTP
+                </div>
+              </div>
+            </button>
+
             <a
               href="https://t.me/inbestiga_tesis_bot"
               target="_blank"
@@ -605,13 +629,6 @@ export default function PayersCommandCenterPage() {
           onTriggerCelebration={() => setCelebrateCounter((c) => c + 1)}
           externalStageId={activeStageId}
           onStageChange={setActiveStageId}
-        />
-      </section>
-
-      <section id="seccion-cerebro-bi">
-        <BICognitiveEnginePanel
-          ordenDetalle={ordenDetalle}
-          selectedOrdenId={selectedOrdenId}
         />
       </section>
 
@@ -985,6 +1002,13 @@ export default function PayersCommandCenterPage() {
           </div>
         </div>
       </section>
+
+      <BICognitiveDrawer
+        open={biDrawerOpen}
+        onClose={() => setBiDrawerOpen(false)}
+        ordenDetalle={ordenDetalle}
+        selectedOrdenId={selectedOrdenId}
+      />
     </div>
   );
 }
