@@ -156,22 +156,6 @@ export default function PayersReportePage() {
             )}
             <span>Sincronizar ETL</span>
           </button>
-
-          <Link
-            href="/admin/customers"
-            className="px-3.5 py-2.5 rounded-xl text-xs font-bold bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-700 flex items-center gap-1.5 transition-colors"
-          >
-            <BookOpen className="w-3.5 h-3.5 text-amber-500" />
-            <span>Hitos & Asesor</span>
-          </Link>
-
-          <Link
-            href="/admin/comprobantes"
-            className="px-3.5 py-2.5 rounded-xl text-xs font-bold bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-700 flex items-center gap-1.5 transition-colors"
-          >
-            <Receipt className="w-3.5 h-3.5 text-sky-500" />
-            <span>Comprobantes</span>
-          </Link>
         </div>
       </div>
 
@@ -554,35 +538,35 @@ export default function PayersReportePage() {
               <table className="w-full text-left text-xs sm:text-sm border-collapse">
                 <thead>
                   <tr className="border-b border-slate-200 dark:border-slate-800 text-[11px] uppercase text-slate-500 font-bold bg-slate-50/70 dark:bg-slate-950/50">
-                    <th className="py-3.5 px-4">Etapa de Alerta</th>
-                    <th className="py-3.5 px-3">Canal</th>
-                    <th className="py-3.5 px-3 text-center">Alertas Enviadas</th>
-                    <th className="py-3.5 px-3 text-center">Pagos Recuperados (≤72h)</th>
-                    <th className="py-3.5 px-3 text-center">Casos Escalados</th>
+                    <th className="py-3.5 px-4">Tipo de Alerta</th>
+                    <th className="py-3.5 px-3">Secuencia</th>
+                    <th className="py-3.5 px-3 text-center">Payers Alertados</th>
+                    <th className="py-3.5 px-3 text-center">Recuperados (≤72h)</th>
+                    <th className="py-3.5 px-3 text-center">Escalados a Humano</th>
                     <th className="py-3.5 px-3 text-center">Tasa Recuperación P03</th>
                     <th className="py-3.5 px-4 text-right">Monto Recuperado (PEN)</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-slate-800/70">
-                  {vista32Recuperacion.map((row: any) => {
-                    const isTotal = String(row.etapa_alerta).includes('TOTAL');
+                  {vista32Recuperacion.map((row: any, idx: number) => {
+                    const isTotal = String(row.secuencia || row.tipo_alerta).includes('TOTAL');
                     return (
                       <tr
-                        key={row.etapa_alerta}
+                        key={`${row.tipo_alerta}_${row.secuencia}_${idx}`}
                         className={
                           isTotal
                             ? 'bg-amber-50/80 dark:bg-amber-950/30 font-black text-slate-900 dark:text-white'
                             : 'hover:bg-slate-50 dark:hover:bg-slate-800/40'
                         }
                       >
-                        <td className="py-3.5 px-4 font-semibold">{row.etapa_alerta}</td>
-                        <td className="py-3.5 px-3 font-mono text-xs">{row.canal}</td>
-                        <td className="py-3.5 px-3 text-center font-mono">{row.alertas_enviadas}</td>
+                        <td className="py-3.5 px-4 font-semibold">{row.tipo_alerta}</td>
+                        <td className="py-3.5 px-3 font-mono text-xs">{row.secuencia}</td>
+                        <td className="py-3.5 px-3 text-center font-mono">{row.payers_alertados}</td>
                         <td className="py-3.5 px-3 text-center font-mono text-emerald-700 dark:text-emerald-400 font-bold">
-                          {row.recuperados_72h}
+                          {row.payers_recuperados_72h}
                         </td>
                         <td className="py-3.5 px-3 text-center font-mono text-rose-600 dark:text-rose-400">
-                          {row.escalados}
+                          {row.escalamientos_humano}
                         </td>
                         <td className="py-3.5 px-3 text-center font-mono font-bold">
                           {row.pct_recuperacion_p03}%
@@ -841,26 +825,26 @@ export default function PayersReportePage() {
                     <table className="w-full text-left text-[11px] border border-slate-300 border-collapse">
                       <thead className="bg-slate-100 border-b border-slate-300 font-bold">
                         <tr>
-                          <th className="py-2 px-2.5">Etapa de Alerta</th>
-                          <th className="py-2 px-2">Canal</th>
-                          <th className="py-2 px-2 text-center">Enviadas</th>
-                          <th className="py-2 px-2 text-center">Recuperadas (≤72h)</th>
-                          <th className="py-2 px-2 text-center">Escaladas</th>
+                          <th className="py-2 px-2.5">Tipo de Alerta</th>
+                          <th className="py-2 px-2">Secuencia</th>
+                          <th className="py-2 px-2 text-center">Alertados</th>
+                          <th className="py-2 px-2 text-center">Recuperados (≤72h)</th>
+                          <th className="py-2 px-2 text-center">Escalados</th>
                           <th className="py-2 px-2 text-center">Efectividad P03</th>
                           <th className="py-2 px-2.5 text-right">Monto Recuperado</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-200">
-                        {vista32Recuperacion.map((r: any) => (
+                        {vista32Recuperacion.map((r: any, idx: number) => (
                           <tr
-                            key={r.etapa_alerta}
-                            className={String(r.etapa_alerta).includes('TOTAL') ? 'font-black bg-slate-100' : ''}
+                            key={`${r.tipo_alerta}_${r.secuencia}_${idx}`}
+                            className={String(r.secuencia || r.tipo_alerta).includes('TOTAL') ? 'font-black bg-slate-100' : ''}
                           >
-                            <td className="py-1.5 px-2.5">{r.etapa_alerta}</td>
-                            <td className="py-1.5 px-2 font-mono">{r.canal}</td>
-                            <td className="py-1.5 px-2 text-center font-mono">{r.alertas_enviadas}</td>
-                            <td className="py-1.5 px-2 text-center font-mono">{r.recuperados_72h}</td>
-                            <td className="py-1.5 px-2 text-center font-mono">{r.escalados}</td>
+                            <td className="py-1.5 px-2.5">{r.tipo_alerta}</td>
+                            <td className="py-1.5 px-2 font-mono">{r.secuencia}</td>
+                            <td className="py-1.5 px-2 text-center font-mono">{r.payers_alertados}</td>
+                            <td className="py-1.5 px-2 text-center font-mono">{r.payers_recuperados_72h}</td>
+                            <td className="py-1.5 px-2 text-center font-mono">{r.escalamientos_humano}</td>
                             <td className="py-1.5 px-2 text-center font-mono">{r.pct_recuperacion_p03}%</td>
                             <td className="py-1.5 px-2.5 text-right font-mono font-bold">
                               S/ {Number(r.monto_recuperado).toFixed(2)}
