@@ -8,7 +8,7 @@ async function bootstrap() {
   const logger = new Logger('Bootstrap');
   const app = await NestFactory.create(AppModule);
 
-  // Soporte para payloads grandes de webhooks de WhatsApp (OpenWA)
+  // Soporte para payloads grandes de webhooks de WhatsApp (Evolution API)
   app.use(json({ limit: '50mb' }));
   app.use(urlencoded({ extended: true, limit: '50mb' }));
 

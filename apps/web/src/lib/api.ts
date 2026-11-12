@@ -138,7 +138,7 @@ export const api = {
   getPayersOverview: () => fetchApi('/payers/overview'),
   getPayerOrden: (id: number | string) => fetchApi(`/payers/ordenes/${id}`),
   enviarMensajePayerAgent: (ordenPagoId: number, mensaje: string) =>
-    fetchApi('/payers/agent/chat', {
+    fetchApi('/whatsapp/agent-chat', {
       method: 'POST',
       body: JSON.stringify({ ordenPagoId, mensaje }),
     }),

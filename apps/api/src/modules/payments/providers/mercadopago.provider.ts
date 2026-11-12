@@ -12,14 +12,16 @@ export class MercadoPagoProvider implements PaymentProvider {
   private readonly logger = new Logger(MercadoPagoProvider.name);
   private readonly accessToken: string;
   private readonly publicKey: string;
+  private readonly sandbox: boolean;
   private readonly apiUrl = 'https://api.mercadopago.com';
 
   constructor() {
     this.accessToken = process.env.MERCADOPAGO_ACCESS_TOKEN || '';
     this.publicKey = process.env.MERCADOPAGO_PUBLIC_KEY || '';
+    this.sandbox = (process.env.MERCADOPAGO_SANDBOX || '').toLowerCase() === 'true';
 
     if (this.accessToken && !this.accessToken.includes('...')) {
-      const esPrueba = this.accessToken.startsWith('TEST-') || this.accessToken.includes('TESTUSER') || this.accessToken.startsWith('APP_USR-');
+      const esPrueba = this.sandbox || this.accessToken.startsWith('TEST-') || this.accessToken.includes('TESTUSER');
       this.logger.log(`✓ Mercado Pago Provider inicializado con credenciales (${esPrueba ? 'MODO SANDBOX / TEST' : 'MODO PRODUCCIÓN'}).`);
     } else {
       this.logger.log('ℹ Mercado Pago Provider en modo DEMO. Configure MERCADOPAGO_ACCESS_TOKEN en .env.');
@@ -73,9 +75,10 @@ export class MercadoPagoProvider implements PaymentProvider {
         });
 
         const prefData = response.data;
-        const checkoutUrl = this.accessToken.startsWith('TEST-')
-          ? prefData.sandbox_init_point || prefData.init_point
-          : prefData.init_point || prefData.sandbox_init_point;
+        const checkoutUrl =
+          this.sandbox || this.accessToken.startsWith('TEST-')
+            ? prefData.sandbox_init_point || prefData.init_point
+            : prefData.init_point || prefData.sandbox_init_point;
         this.logger.log(`✓ Preferencia Mercado Pago creada: ${prefData.id} -> ${checkoutUrl}`);
 
         return {

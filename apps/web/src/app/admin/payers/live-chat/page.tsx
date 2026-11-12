@@ -64,10 +64,11 @@ function PayersLiveChatContent() {
       const res = await api.getPayersOverview();
       const list: any[] = res?.ordenesDetalle || [];
       setOrdenes(list);
-      if (activeId == null && list.length > 0) {
+      setActiveId((prev) => {
+        if (prev != null || list.length === 0) return prev;
         const first = list.find((o) => o.estado_orden !== 'PAGADA') || list[0];
-        setActiveId(first.id_orden_pago);
-      }
+        return first.id_orden_pago;
+      });
     } catch (err) {
       console.error(err);
     }
@@ -85,6 +86,14 @@ function PayersLiveChatContent() {
     cargarOrdenes();
   }, []);
 
+  // Refresco automático de la lista para ver en vivo nuevas conversaciones y cambios de estado
+  useEffect(() => {
+    const t = setInterval(() => {
+      cargarOrdenes();
+    }, 8000);
+    return () => clearInterval(t);
+  }, []);
+
   useEffect(() => {
     if (activeId != null) {
       setLastGuardrails([]);
@@ -93,7 +102,7 @@ function PayersLiveChatContent() {
     }
   }, [activeId]);
 
-  // Refresco automático para ver las respuestas reales que llegan por Telegram/WhatsApp
+  // Refresco automático del detalle para ver las respuestas reales que llegan por WhatsApp
   useEffect(() => {
     if (activeId == null) return;
     const t = setInterval(() => {

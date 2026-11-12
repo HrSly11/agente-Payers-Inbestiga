@@ -150,7 +150,7 @@ export class CustomersService {
       },
     });
 
-    // 7. Notificar al Estudiante vía WhatsApp mediante OpenWA
+    // 7. Notificar al Estudiante vía WhatsApp mediante Evolution API
     const conversacion = await this.prisma.conversacion.findFirst({
       where: { buyerId: buyer.id },
       orderBy: { fechaInicio: 'desc' },

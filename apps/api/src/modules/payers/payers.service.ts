@@ -1,5 +1,7 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, Inject, forwardRef } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service';
+import { MercadoPagoProvider } from '../payments/providers/mercadopago.provider';
+import { WhatsAppService } from '../whatsapp/whatsapp.service';
 import * as crypto from 'crypto';
 
 export interface ToolExecutionRecord {
@@ -14,7 +16,139 @@ export interface ToolExecutionRecord {
 export class PayersService {
   private readonly logger = new Logger(PayersService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly mercadoPagoProvider: MercadoPagoProvider,
+    @Inject(forwardRef(() => WhatsAppService))
+    private readonly whatsappService: WhatsAppService,
+  ) {}
+
+  /**
+   * Genera una URL real de pago en Mercado Pago (Checkout Pro) para una orden y monto dados.
+   * Reemplaza los antiguos enlaces `http://localhost:3000/...`, que no eran accesibles para el
+   * estudiante. Si Mercado Pago no responde, cae al checkout del frontend configurado.
+   */
+  private async generarUrlCheckoutMercadoPago(params: {
+    codigoOrden: string;
+    monto: number;
+    servicio?: string;
+    email?: string;
+    nombre?: string;
+  }): Promise<string> {
+    const montoSeguro = Number(params.monto) > 0 ? Number(params.monto) : 1;
+    try {
+      const res = await this.mercadoPagoProvider.crearCheckout({
+        cotizacionId: params.codigoOrden,
+        monto: montoSeguro,
+        moneda: 'PEN',
+        descripcion: `INBESTIGA.TESIS - ${params.servicio || params.codigoOrden}`,
+        clienteEmail: params.email,
+        clienteNombre: params.nombre,
+        cuotas: 1,
+      });
+      if (res?.checkoutUrl && !res.checkoutUrl.includes('localhost')) {
+        return res.checkoutUrl;
+      }
+      this.logger.warn(
+        `Mercado Pago devolvió un enlace no público para ${params.codigoOrden}; se usa respaldo del frontend.`,
+      );
+    } catch (error: any) {
+      this.logger.warn(
+        `No se pudo generar el enlace de Mercado Pago para ${params.codigoOrden}: ${error.message}`,
+      );
+    }
+    const base = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
+    return `${base}/checkout/${params.codigoOrden}`;
+  }
+
+  /**
+   * Devuelve el enlace de pago vigente de una orden: reutiliza el enlace activo si ya es un
+   * enlace público (Mercado Pago o dominio real) o genera uno nuevo en Mercado Pago.
+   */
+  private async urlPagoVigente(orden: any, monto: number, enlaceActivo?: any): Promise<string> {
+    const existente: string | undefined = enlaceActivo?.url_enlace;
+    if (existente && !existente.includes('localhost')) return existente;
+    return this.generarUrlCheckoutMercadoPago({
+      codigoOrden: orden.codigo_orden,
+      monto,
+      servicio: orden.servicio_nombre,
+      email: orden.estudiante_email,
+      nombre: orden.estudiante_nombre,
+    });
+  }
+
+  /**
+   * Calcula el estado financiero real de una orden de forma ÚNICA y consistente para todo el
+   * agente: total comprometido, total cobrado (solo pagos CONFIRMADO), saldo pendiente real y si la
+   * orden quedó totalmente liquidada. También determina la cuota realmente exigible, excluyendo las
+   * cuotas en ESPERA_HITO (bloqueadas por hito académico no aprobado).
+   *
+   * Reglas de negocio cubiertas:
+   * - Cierre al saldo 0: cuando `ordenLiquidada` es true el agente no debe emitir más enlaces ni
+   *   solicitar pagos, sin importar el estado nominal de la orden.
+   * - Cuota exigible: se prioriza una cuota cobrable (EXIGIBLE / ENLACE_ENVIADO / VENCIDA /
+   *   POR_VERIFICAR); una cuota ESPERA_HITO nunca se trata como exigible.
+   */
+  private estadoFinanciero(orden: any, cuotas: any[], pagos: any[]) {
+    const totalComprometido = Number(orden.monto_comprometido || 0);
+    const pagosConfirmados = (pagos || []).filter((p) => p.estado === 'CONFIRMADO');
+    const totalCobradoConfirmado = pagosConfirmados.reduce(
+      (acc, p) => acc + Number(p.monto_pagado || 0),
+      0,
+    );
+    // Se toma el mayor entre el agregado analítico y la fuente transaccional para no subestimar
+    // lo cobrado, pero sin contar vouchers POR_VERIFICAR como confirmados.
+    const totalCobrado = Math.max(Number(orden.monto_cobrado || 0), totalCobradoConfirmado);
+    const saldoPendiente = Math.max(0, Number((totalComprometido - totalCobrado).toFixed(2)));
+    const ordenLiquidada = totalComprometido > 0 && saldoPendiente === 0;
+
+    const cuotasVigentes = (cuotas || []).filter(
+      (c) => c.estado !== 'PAGADA' && c.estado !== 'ANULADA',
+    );
+    const ultimaCuota = (cuotas || [])[0];
+    const cuotaExigible =
+      cuotasVigentes.find((c) =>
+        ['EXIGIBLE', 'ENLACE_ENVIADO', 'VENCIDA', 'POR_VERIFICAR'].includes(c.estado),
+      ) ||
+      cuotasVigentes.find((c) => c.estado !== 'ESPERA_HITO') ||
+      cuotasVigentes[0] ||
+      // Sin cuota vigente: si aún queda saldo por cobrar, se presenta como saldo pendiente en
+      // lugar de reutilizar una cuota ya PAGADA/ANULADA como "exigible" (mensaje contradictorio).
+      // Se conserva `cuota_id`/`numero_cuota` originales por seguridad de las operaciones SQL.
+      (saldoPendiente > 0 && ultimaCuota
+        ? {
+            ...ultimaCuota,
+            monto_programado: saldoPendiente,
+            condicion: 'Saldo pendiente por regularizar',
+            estado: 'PENDIENTE',
+          }
+        : ultimaCuota) || {
+        cuota_id: Number(orden.orden_pago_id),
+        numero_cuota: 1,
+        monto_programado: totalComprometido,
+        condicion: 'Pago único',
+        estado: 'EXIGIBLE',
+      };
+
+    const esCuotaBloqueada = cuotaExigible.estado === 'ESPERA_HITO';
+    const montoCuotaExigible = Number(cuotaExigible.monto_programado || 0);
+    // Nunca solicitar más de lo que realmente se adeuda.
+    const montoCobrable = ordenLiquidada
+      ? 0
+      : Math.min(montoCuotaExigible, saldoPendiente || montoCuotaExigible);
+
+    return {
+      totalComprometido,
+      totalCobrado,
+      saldoPendiente,
+      ordenLiquidada,
+      pagosConfirmados,
+      cuotaExigible,
+      esCuotaBloqueada,
+      montoCuotaExigible,
+      montoCobrable,
+    };
+  }
 
   /**
    * Busca el expediente activo de un estudiante por su número de teléfono celular (9 u 11 dígitos)
@@ -47,6 +181,25 @@ export class PayersService {
     `);
 
     return rows.length > 0 ? rows[0] : null;
+  }
+
+  /**
+   * Obtiene el teléfono celular del contacto asociado a una orden de pago.
+   * Se usa para despachar por WhatsApp las respuestas del Agente PAYERS cuando
+   * el operador conversa desde el Live Chat del panel.
+   */
+  async obtenerTelefonoPorOrden(ordenPagoId: number): Promise<string | null> {
+    const rows: any[] = await this.prisma.$queryRawUnsafe(`
+      SELECT TOP 1 ct.telefono
+      FROM INBESTIGA_TESIS.dbo.ORDEN_PAGO op
+      INNER JOIN INBESTIGA_TESIS.dbo.PROPUESTA pr ON pr.propuesta_id = op.propuesta_id
+      INNER JOIN INBESTIGA_TESIS.dbo.LEAD l ON l.lead_id = pr.lead_id
+      INNER JOIN INBESTIGA_TESIS.dbo.BUYER b ON b.buyer_id = l.buyer_id
+      INNER JOIN INBESTIGA_TESIS.dbo.CONTACTO ct ON ct.contacto_id = b.contacto_id
+      WHERE op.orden_pago_id = ${Number(ordenPagoId)};
+    `);
+
+    return rows.length > 0 ? rows[0].telefono : null;
   }
 
   /**
@@ -587,17 +740,10 @@ export class PayersService {
     const guardrailsActivados: string[] = [];
     let respuesta = '';
 
-    // Cuota exigible actual
-    const cuotaPendiente =
-      cuotas.find((c) => c.estado !== 'PAGADA' && c.estado !== 'ANULADA') ||
-      cuotas[0] || {
-        cuota_id: ordenPagoId,
-        numero_cuota: 1,
-        monto_programado: Number(orden.monto_comprometido),
-        condicion: 'Pago único',
-        estado: 'EXIGIBLE',
-      };
-    const montoCuotaActual = Number(cuotaPendiente.monto_programado);
+    // Estado financiero unificado y cuota realmente exigible (excluye cuotas ESPERA_HITO)
+    const finanzas = this.estadoFinanciero(orden, cuotas, pagos);
+    const cuotaPendiente = finanzas.cuotaExigible;
+    const montoCuotaActual = finanzas.montoCobrable;
     const enlaceActivo = enlaces[0];
 
     // =========================================================================
@@ -674,6 +820,45 @@ export class PayersService {
       respuesta =
         `He verificado tu expediente (${orden.codigo_orden}) y detecté que el paquete de traspaso desde LEADS figura con observaciones pendientes (${handoff?.detalle_incompleto || 'datos contractuales por completar'}).\n\n` +
         `Por política de seguridad de INBESTIGA (RN-L1), he derivado tu caso inmediatamente al especialista de LEADS para que complete tu ficha antes de emitir el cobro.`;
+    }
+    // =========================================================================
+    // REGLA 2.5: Cierre al Saldo 0 (Orden Totalmente Liquidada)
+    // =========================================================================
+    else if (
+      finanzas.ordenLiquidada &&
+      !/entrega|sesi[oó]n|asesor|reuni[oó]n|meet|cronograma|mis cuotas/i.test(msgLower)
+    ) {
+      guardrailsActivados.push(
+        'Cierre por saldo 0: orden 100% cancelada — prohibido emitir enlaces o solicitar pagos adicionales',
+      );
+      await this.prisma.$executeRawUnsafe(`
+        UPDATE INBESTIGA_TESIS.dbo.ALERTA_COBRANZA
+        SET resultado = 'RECUPERADO'
+        WHERE orden_pago_id = ${ordenPagoId} AND resultado = 'ENVIADO';
+      `);
+      const toolCierre = await this.logToolExecution(
+        conversacionId,
+        ordenPagoId,
+        'consultar_orden_pago',
+        { orden_pago_id: ordenPagoId, verificacion: 'ORDEN_LIQUIDADA' },
+        {
+          orden_pagada: true,
+          total_comprometido: finanzas.totalComprometido,
+          total_cobrado: finanzas.totalCobrado,
+          saldo_pendiente: 0,
+        },
+        55,
+      );
+      herramientasEjecutadas.push(toolCierre);
+
+      respuesta =
+        `🎉 **¡Tu orden está 100% cancelada, ${orden.estudiante_nombre}!**\n\n` +
+        `• **Orden:** ${orden.codigo_orden} — ${orden.servicio_nombre}\n` +
+        `• **Total abonado:** S/ ${finanzas.totalCobrado.toFixed(2)} de S/ ${finanzas.totalComprometido.toFixed(2)}\n` +
+        `• **Saldo pendiente:** S/ 0.00\n` +
+        `• **Estado del servicio:** \`ACTIVO\`\n` +
+        `• **Asesor Metodológico:** ${orden.asesor_nombre || 'Dr. Carlos Alberto Méndez Vargas'}\n\n` +
+        `Ya no tienes ningún pago pendiente ni cuotas por abonar. Si deseas coordinar tu próxima sesión o entrega, escríbeme y lo gestiono con tu asesor. 😊`;
     }
     // =========================================================================
     // REGLA 3: Solicitud de Rebaja / Descuento / Cambio de Alcance (RN-02)
@@ -760,7 +945,13 @@ export class PayersService {
         herramientasEjecutadas.push(toolPol);
 
         const refLink = `lnk_card_${ordenPagoId}_${Date.now().toString().slice(-5)}`;
-        const urlLink = `http://localhost:3000/checkout/${orden.codigo_orden}`;
+        const urlLink = await this.generarUrlCheckoutMercadoPago({
+          codigoOrden: orden.codigo_orden,
+          monto: montoCuotaActual,
+          servicio: orden.servicio_nombre,
+          email: orden.estudiante_email,
+          nombre: orden.estudiante_nombre,
+        });
         await this.prisma.$executeRawUnsafe(`
           INSERT INTO INBESTIGA_TESIS.dbo.ENLACE_PAGO (
             orden_pago_id, cuota_id, medio_pago_id, referencia_externa, url_enlace, monto, fecha_envio, fecha_expiracion, estado
@@ -811,7 +1002,13 @@ export class PayersService {
         );
         const medioId = billetera === 'Plin' ? 2 : 1;
         const refLink = `lnk_${billetera.toLowerCase()}_${ordenPagoId}_${Date.now().toString().slice(-5)}`;
-        const urlLink = `http://localhost:3000/checkout/${orden.codigo_orden}`;
+        const urlLink = await this.generarUrlCheckoutMercadoPago({
+          codigoOrden: orden.codigo_orden,
+          monto: montoCuotaActual,
+          servicio: orden.servicio_nombre,
+          email: orden.estudiante_email,
+          nombre: orden.estudiante_nombre,
+        });
 
         await this.prisma.$executeRawUnsafe(`
           INSERT INTO INBESTIGA_TESIS.dbo.ENLACE_PAGO (
@@ -857,35 +1054,44 @@ export class PayersService {
       ) &&
       !/3 cuotas|6 cuotas|fraccionar|cambiar/i.test(msgLower)
     ) {
-      guardrailsActivados.push('Solicitud expresa de emisión o reenvío de enlace de pago oficial');
-      const urlEnlace =
-        enlaceActivo?.url_enlace || `http://localhost:3000/checkout/${orden.codigo_orden}`;
+      if (finanzas.esCuotaBloqueada) {
+        guardrailsActivados.push(
+          'Solicitud de enlace denegada: la cuota vigente está en ESPERA_HITO (sin enlace hasta aprobar el hito)',
+        );
+        respuesta =
+          `⏳ **Aún no hay una cuota exigible para pagar, ${orden.estudiante_nombre}.**\n\n` +
+          `Tu siguiente cuota (#${cuotaPendiente.numero_cuota}, S/ ${finanzas.montoCuotaExigible.toFixed(2)}) está atada a un **hito académico verificable** (\`ESPERA_HITO\`). ` +
+          `Se habilitará para pago y te enviaré el enlace en cuanto tu asesor (**${orden.asesor_nombre || 'Dr. Carlos Alberto Méndez Vargas'}**) apruebe el entregable correspondiente.`;
+      } else {
+        guardrailsActivados.push('Solicitud expresa de emisión o reenvío de enlace de pago oficial');
+        const urlEnlace = await this.urlPagoVigente(orden, montoCuotaActual, enlaceActivo);
 
-      const toolLink = await this.logToolExecution(
-        conversacionId,
-        ordenPagoId,
-        'emitir_enlace_pago',
-        {
-          orden_pago_id: ordenPagoId,
-          cuota_id: cuotaPendiente.cuota_id,
-          monto: montoCuotaActual,
-        },
-        {
-          url_enlace: urlEnlace,
-          estado_cuota: cuotaPendiente.estado,
-        },
-        80,
-      );
-      herramientasEjecutadas.push(toolLink);
+        const toolLink = await this.logToolExecution(
+          conversacionId,
+          ordenPagoId,
+          'emitir_enlace_pago',
+          {
+            orden_pago_id: ordenPagoId,
+            cuota_id: cuotaPendiente.cuota_id,
+            monto: montoCuotaActual,
+          },
+          {
+            url_enlace: urlEnlace,
+            estado_cuota: cuotaPendiente.estado,
+          },
+          80,
+        );
+        herramientasEjecutadas.push(toolLink);
 
-      respuesta =
-        `• **Enlace Oficial de Pago — Orden ${orden.codigo_orden}:**\n\n` +
-        `Hola **${orden.estudiante_nombre}**, aquí tienes tu enlace directo para abonar de forma segura:\n\n` +
-        `• **Pagar en Pasarela Mercado Pago:** ${urlEnlace}\n\n` +
-        `• **Servicio:** ${orden.servicio_nombre}\n` +
-        `• **Cuota #${cuotaPendiente.numero_cuota}:** S/ ${montoCuotaActual.toFixed(2)} (\`${cuotaPendiente.estado}\`)\n` +
-        `• **Medios aceptados:** Mercado Pago (Tarjeta de Crédito/Débito, Yape, PagoEfectivo) y Transferencia BCP.\n\n` +
-        `Una vez acreditado tu abono, tu servicio queda activo con tu asesor asignado (**${orden.asesor_nombre || 'Dr. Carlos Alberto Méndez Vargas'}**).`;
+        respuesta =
+          `• **Enlace Oficial de Pago — Orden ${orden.codigo_orden}:**\n\n` +
+          `Hola **${orden.estudiante_nombre}**, aquí tienes tu enlace directo para abonar de forma segura:\n\n` +
+          `• **Pagar en Pasarela Mercado Pago:** ${urlEnlace}\n\n` +
+          `• **Servicio:** ${orden.servicio_nombre}\n` +
+          `• **Cuota #${cuotaPendiente.numero_cuota}:** S/ ${montoCuotaActual.toFixed(2)} (\`${cuotaPendiente.estado}\`)\n` +
+          `• **Medios aceptados:** Mercado Pago (Tarjeta de Crédito/Débito, Yape, PagoEfectivo) y Transferencia BCP.\n\n` +
+          `Una vez acreditado tu abono, tu servicio queda activo con tu asesor asignado (**${orden.asesor_nombre || 'Dr. Carlos Alberto Méndez Vargas'}**).`;
+      }
     }
     // =========================================================================
     // REGLA 5: Envío de Voucher / Transferencia Manual (RN-06)
@@ -1060,7 +1266,13 @@ export class PayersService {
 
         const medioDefault = montoCuotaActual <= 500 ? 1 : 3;
         const refLink = `lnk_ctr_${ordenPagoId}_${Date.now().toString().slice(-5)}`;
-        const urlLink = `http://localhost:3000/checkout/${orden.codigo_orden}`;
+        const urlLink = await this.generarUrlCheckoutMercadoPago({
+          codigoOrden: orden.codigo_orden,
+          monto: montoCuotaActual,
+          servicio: orden.servicio_nombre,
+          email: orden.estudiante_email,
+          nombre: orden.estudiante_nombre,
+        });
 
         await this.prisma.$executeRawUnsafe(`
           INSERT INTO INBESTIGA_TESIS.dbo.ENLACE_PAGO (
@@ -1152,14 +1364,14 @@ export class PayersService {
       );
       herramientasEjecutadas.push(toolCronograma);
 
-      const saldo = Number(orden.monto_comprometido) - Number(orden.monto_cobrado);
+      const saldo = finanzas.saldoPendiente;
       let cronoText =
         `📅 **Cronograma Oficial de Pagos — Orden ${orden.codigo_orden}**\n\n` +
         `• **Servicio:** ${orden.servicio_nombre}\n` +
         `• **Modalidad pactada:** ${orden.modalidad_condicion}\n` +
-        `• **Total comprometido:** S/ ${Number(orden.monto_comprometido).toFixed(2)}\n` +
-        `• **Monto abonado:** S/ ${Number(orden.monto_cobrado).toFixed(2)}\n` +
-        `• **Saldo pendiente:** S/ ${saldo > 0 ? saldo.toFixed(2) : '0.00'}\n\n` +
+        `• **Total comprometido:** S/ ${finanzas.totalComprometido.toFixed(2)}\n` +
+        `• **Monto abonado:** S/ ${finanzas.totalCobrado.toFixed(2)}\n` +
+        `• **Saldo pendiente:** S/ ${saldo.toFixed(2)}\n\n` +
         `📋 **Desglose de Cuotas:**\n`;
 
       for (const c of todasCuotas) {
@@ -1175,8 +1387,10 @@ export class PayersService {
         cronoText += `\n💡 **Opciones de Flexibilidad Financiera:**\nActualmente tu orden está configurada en **1 pago al contado**. Si prefieres pagar en cuotas por hitos verificables antes de iniciar tu asesoría, solo dime **"cambiar a 3 cuotas"** o **"en 6 cuotas"** y actualizaré tu cronograma inmediatamente.`;
       }
 
-      if (enlaceActivo) {
+      if (enlaceActivo && !finanzas.esCuotaBloqueada && finanzas.saldoPendiente > 0) {
         cronoText += `\n\n💳 **Enlace oficial de pago de tu cuota exigible:** ${enlaceActivo.url_enlace}`;
+      } else if (finanzas.esCuotaBloqueada) {
+        cronoText += `\n\n⏳ Tu siguiente cuota (#${cuotaPendiente.numero_cuota}) está en \`ESPERA_HITO\`: se habilitará para pago en cuanto tu asesor apruebe el hito académico correspondiente.`;
       }
 
       respuesta = cronoText;
@@ -1185,24 +1399,40 @@ export class PayersService {
     // REGLA 8: Configuración / Cambio de Modalidad y Cuotas (RN-03)
     // =========================================================================
     else if (/3 cuotas|tres cuotas|6 cuotas|seis cuotas|contado|en partes|fraccionar|cambiar.*cuotas/i.test(msgLower)) {
-      const pagosConfirmados = pagos.filter((p) => p.estado === 'CONFIRMADO');
-      if (pagosConfirmados.length > 0) {
+      const pagosConfirmados = finanzas.pagosConfirmados;
+      const pagosPorVerificar = pagos.filter((p) => p.estado === 'POR_VERIFICAR');
+      const cuotasYaPagadas = cuotas.filter((c) => c.estado === 'PAGADA');
+      const cuotasPorVerificar = cuotas.filter((c) => c.estado === 'POR_VERIFICAR');
+      const tienePlanIniciado =
+        pagosConfirmados.length > 0 ||
+        pagosPorVerificar.length > 0 ||
+        cuotasYaPagadas.length > 0 ||
+        cuotasPorVerificar.length > 0 ||
+        Number(orden.monto_cobrado) > 0;
+      if (tienePlanIniciado) {
         guardrailsActivados.push(
-          'RN-03: Orden con pago previo confirmado — Cambio de modalidad requiere autorización del Administrador',
+          'RN-03: Plan de pagos ya iniciado — prohibido truncar cuotas abonadas o reestructurar sin autorización del Administrador',
         );
         const toolEstado = await this.logToolExecution(
           conversacionId,
           ordenPagoId,
           'consultar_orden_pago',
           { orden_pago_id: ordenPagoId },
-          { pagos_confirmados: pagosConfirmados.length, cambio_bloqueado: true },
+          {
+            pagos_confirmados: pagosConfirmados.length,
+            pagos_por_verificar: pagosPorVerificar.length,
+            cuotas_pagadas: cuotasYaPagadas.length,
+            monto_cobrado: Number(orden.monto_cobrado),
+            cambio_bloqueado: true,
+          },
           75,
         );
         herramientasEjecutadas.push(toolEstado);
 
         respuesta =
-          `ℹ️ Tu orden **${orden.codigo_orden}** ya registra **${pagosConfirmados.length} pago(s) confirmado(s)** bajo la modalidad **${orden.modalidad_condicion}**.\n\n` +
-          `Por regla de integridad financiera (**RN-03**), una vez iniciado el plan de pagos, cualquier reestructuración de cuotas debe ser autorizada por el Administrador de Caja.`;
+          `ℹ️ Tu orden **${orden.codigo_orden}** ya registra **S/ ${Number(orden.monto_cobrado).toFixed(2)} abonado** (${cuotasYaPagadas.length} cuota(s) pagada(s)${pagosPorVerificar.length > 0 ? `, ${pagosPorVerificar.length} pago(s) en verificación` : ''}) bajo la modalidad **${orden.modalidad_condicion}**.\n\n` +
+          `Por regla de integridad financiera (**RN-03**), no puedo eliminar ni truncar cuotas ya abonadas. Cualquier reestructuración del saldo pendiente debe ser autorizada por el Administrador de Caja.\n\n` +
+          `Tu saldo pendiente actual es de **S/ ${finanzas.saldoPendiente.toFixed(2)}**.`;
       } else if (orden.solo_contado && /3 cuotas|6 cuotas|partes|fraccionar/i.test(msgLower)) {
         guardrailsActivados.push(
           `RN-03: El servicio "${orden.servicio_nombre}" (S/ ${Number(orden.monto_comprometido).toFixed(2)}) tiene solo_contado = 1`,
@@ -1244,13 +1474,13 @@ export class PayersService {
           WHERE orden_pago_id = ${ordenPagoId};
         `);
 
-        // Reemplazar cuotas pendientes manteniendo integridad referencial
+        // Reemplazar SOLO cuotas pendientes (nunca PAGADA / POR_VERIFICAR) preservando integridad referencial
         await this.prisma.$executeRawUnsafe(`
           UPDATE INBESTIGA_TESIS.dbo.ENLACE_PAGO SET cuota_id = NULL WHERE orden_pago_id = ${ordenPagoId};
           UPDATE INBESTIGA_TESIS.dbo.VOUCHER SET cuota_id = NULL WHERE orden_pago_id = ${ordenPagoId};
           UPDATE INBESTIGA_TESIS.dbo.ALERTA_COBRANZA SET cuota_id = NULL WHERE orden_pago_id = ${ordenPagoId};
-          UPDATE INBESTIGA_TESIS.dbo.PAGO SET cuota_id = NULL WHERE orden_pago_id = ${ordenPagoId} AND estado != 'CONFIRMADO';
-          DELETE FROM INBESTIGA_TESIS.dbo.CUOTA_PAGO WHERE orden_pago_id = ${ordenPagoId} AND estado != 'PAGADA';
+          UPDATE INBESTIGA_TESIS.dbo.PAGO SET cuota_id = NULL WHERE orden_pago_id = ${ordenPagoId} AND estado NOT IN ('CONFIRMADO', 'POR_VERIFICAR');
+          DELETE FROM INBESTIGA_TESIS.dbo.CUOTA_PAGO WHERE orden_pago_id = ${ordenPagoId} AND estado NOT IN ('PAGADA', 'POR_VERIFICAR');
         `);
 
         const totalOrden = Number(orden.monto_comprometido);
@@ -1307,7 +1537,13 @@ export class PayersService {
 
         const medioId = montoInicial <= 500 ? 1 : 3;
         const refLink = `lnk_mod_${ordenPagoId}_${Date.now().toString().slice(-5)}`;
-        const urlLink = `http://localhost:3000/checkout/${orden.codigo_orden}`;
+        const urlLink = await this.generarUrlCheckoutMercadoPago({
+          codigoOrden: orden.codigo_orden,
+          monto: montoInicial,
+          servicio: orden.servicio_nombre,
+          email: orden.estudiante_email,
+          nombre: orden.estudiante_nombre,
+        });
 
         await this.prisma.$executeRawUnsafe(`
           INSERT INTO INBESTIGA_TESIS.dbo.ENLACE_PAGO (
@@ -1365,10 +1601,11 @@ export class PayersService {
       );
       herramientasEjecutadas.push(toolResp);
 
+      const urlEnlaceResponsable = await this.urlPagoVigente(orden, montoCuotaActual, enlaceActivo);
       respuesta =
         `👤 **Responsable de Pago Actualizado:**\n` +
         `He registrado a **${tipoResp}** como responsable de pago de tu orden **${orden.codigo_orden}**.\n\n` +
-        `Puedes reenviarle directamente el enlace de pago por **S/ ${montoCuotaActual.toFixed(2)}** (${enlaceActivo?.url_enlace || `http://localhost:3000/checkout/${orden.codigo_orden}`}) o los datos de cuenta corriente corporativa BCP **570-2489103-0-12** (INBESTIGA SAC).`;
+        `Puedes reenviarle directamente el enlace de pago por **S/ ${montoCuotaActual.toFixed(2)}** (${urlEnlaceResponsable}) o los datos de cuenta corriente corporativa BCP **570-2489103-0-12** (INBESTIGA SAC).`;
     }
     // =========================================================================
     // REGLA 10: Pausa de Cobranza / No Contactar (RN-07 / RN-08)
@@ -1480,30 +1717,47 @@ export class PayersService {
         msgLower,
       )
     ) {
-      const pagosConfirmados = pagos.filter((p) => p.estado === 'CONFIRMADO');
+      const pagosConfirmados = finanzas.pagosConfirmados;
       const toolOrden = await this.logToolExecution(
         conversacionId,
         ordenPagoId,
         'consultar_orden_pago',
         { orden_pago_id: ordenPagoId },
-        { estado_orden: orden.estado, pagos_confirmados: pagosConfirmados.length },
+        {
+          estado_orden: orden.estado,
+          pagos_confirmados: pagosConfirmados.length,
+          saldo_pendiente: finanzas.saldoPendiente,
+        },
         65,
       );
       herramientasEjecutadas.push(toolOrden);
 
       if (pagosConfirmados.length > 0 || cuotaPendiente.estado === 'PAGADA' || orden.estado === 'PAGADA') {
         guardrailsActivados.push('RN-04: Orden con cuota inicial confirmada — Servicio activo');
+        const cuotasPendientes = cuotas.filter(
+          (c) => c.estado !== 'PAGADA' && c.estado !== 'ANULADA',
+        ).length;
         respuesta =
-          `🎓 **¡Tu cuota ya está 100% confirmada!**\n\n` +
-          `• **Estado de tu servicio:** \`ACTIVO\`\n` +
-          `• **Monto cobrado:** S/ ${Number(orden.monto_cobrado || orden.monto_comprometido).toFixed(2)} de S/ ${Number(orden.monto_comprometido).toFixed(2)}\n\n` +
+          `🎓 **¡Tu cuota inicial ya está confirmada!** Tu servicio está \`ACTIVO\`.\n\n` +
+          `• **Monto cobrado:** S/ ${finanzas.totalCobrado.toFixed(2)} de S/ ${finanzas.totalComprometido.toFixed(2)}\n` +
+          `• **Saldo pendiente:** S/ ${finanzas.saldoPendiente.toFixed(2)}\n\n` +
           `📌 **Siguiente paso:** Tu asesoría académica ya está activa. ` +
           `El especialista metodológico asignado a tu carrera (**${orden.asesor_nombre || 'Dr. Carlos Alberto Méndez Vargas'}**) se comunicará contigo para coordinar la primera sesión de inducción y el entregable del cronograma.\n\n` +
-          `¡Ya no tienes que realizar ningún pago adicional en este momento!`;
+          (finanzas.saldoPendiente > 0
+            ? `📅 Tienes **${cuotasPendientes}** cuota(s) pendiente(s). Las cuotas por hito se habilitan al aprobarse cada entregable (\`ESPERA_HITO\`); te avisaré cuando corresponda abonarlas.`
+            : `¡Ya no tienes que realizar ningún pago adicional!`);
+      } else if (finanzas.esCuotaBloqueada) {
+        guardrailsActivados.push(
+          'Orientación de Cobranza: cuota en ESPERA_HITO — sin enlace de pago hasta aprobar el hito',
+        );
+        respuesta =
+          `📋 **Estado de tu orden ${orden.codigo_orden}:**\n\n` +
+          `• **Cuota relacionada (#${cuotaPendiente.numero_cuota}):** S/ ${finanzas.montoCuotaExigible.toFixed(2)} (\`ESPERA_HITO\`)\n` +
+          `• **Saldo pendiente:** S/ ${finanzas.saldoPendiente.toFixed(2)}\n\n` +
+          `⏳ Esa cuota está atada a un **hito académico verificable**: se habilitará para pago en cuanto tu asesor (**${orden.asesor_nombre || 'Dr. Carlos Alberto Méndez Vargas'}**) apruebe el entregable correspondiente. Te enviaré el enlace en ese momento, sin que tengas que hacer nada ahora.`;
       } else {
         guardrailsActivados.push('Orientación de Cobranza: Instrucciones para activación de servicio');
-        const urlEnlace =
-          enlaceActivo?.url_enlace || `http://localhost:3000/checkout/${orden.codigo_orden}`;
+        const urlEnlace = await this.urlPagoVigente(orden, montoCuotaActual, enlaceActivo);
         respuesta =
           `📋 **Para activar tu servicio y asignarte asesor metodológico:**\n\n` +
           `Solo falta completar el abono de tu cuota inicial (**S/ ${montoCuotaActual.toFixed(2)}**).\n\n` +
@@ -1521,11 +1775,11 @@ export class PayersService {
         msgLower,
       )
     ) {
-      const totalComprometido = Number(orden.monto_comprometido || 0);
-      const totalCobrado = Number(orden.monto_cobrado || 0);
-      const saldoPendiente = Math.max(0, totalComprometido - totalCobrado);
-      const estaPagada = orden.estado === 'PAGADA' || (saldoPendiente === 0 && totalComprometido > 0);
-      const pagosConfirmados = pagos.filter((p) => p.estado === 'CONFIRMADO');
+      const totalComprometido = finanzas.totalComprometido;
+      const totalCobrado = finanzas.totalCobrado;
+      const saldoPendiente = finanzas.saldoPendiente;
+      const estaPagada = finanzas.ordenLiquidada;
+      const pagosConfirmados = finanzas.pagosConfirmados;
 
       const toolDeuda = await this.logToolExecution(
         conversacionId,
@@ -1541,28 +1795,36 @@ export class PayersService {
         respuesta =
           `🎉 **¡No tienes ninguna deuda pendiente, ${orden.estudiante_nombre}!**\n\n` +
           `Tu orden **${orden.codigo_orden}** (${orden.servicio_nombre}) se encuentra **100% CANCELADA**:\n` +
-          `• **Monto abonado:** S/ ${totalComprometido.toFixed(2)}\n` +
+          `• **Monto abonado:** S/ ${finanzas.totalCobrado.toFixed(2)}\n` +
           `• **Saldo pendiente:** S/ 0.00\n` +
           `• **Estado del servicio:** \`ACTIVO\`\n` +
           `• **Asesor Asignado:** ${orden.asesor_nombre || 'Dr. Carlos Alberto Méndez Vargas'}\n\n` +
           `¡Tu asesoría está en marcha y ya no requieres realizar ningún pago!`;
+      } else if (finanzas.esCuotaBloqueada) {
+        respuesta =
+          `📋 **Estado de tu cuenta — Orden ${orden.codigo_orden}:**\n\n` +
+          `• **Total comprometido:** S/ ${totalComprometido.toFixed(2)}\n` +
+          `• **Total abonado a la fecha:** S/ ${totalCobrado.toFixed(2)}\n` +
+          `• **Saldo pendiente de pago:** S/ ${saldoPendiente.toFixed(2)}\n` +
+          `• **Cuota actual (#${cuotaPendiente.numero_cuota}):** S/ ${finanzas.montoCuotaExigible.toFixed(2)} (\`ESPERA_HITO\`)\n\n` +
+          `⏳ Esa cuota está atada a un hito académico y aún no es exigible: se habilita para pago cuando tu asesor apruebe el entregable. No tienes ningún pago inmediato por realizar.`;
       } else {
+        const urlEnlace = await this.urlPagoVigente(orden, montoCuotaActual, enlaceActivo);
         respuesta =
           `📋 **Estado de tu cuenta — Orden ${orden.codigo_orden}:**\n\n` +
           `• **Total comprometido:** S/ ${totalComprometido.toFixed(2)}\n` +
           `• **Total abonado a la fecha:** S/ ${totalCobrado.toFixed(2)}\n` +
           `• **Saldo pendiente de pago:** S/ ${saldoPendiente.toFixed(2)}\n` +
           `• **Cuota actual (#${cuotaPendiente.numero_cuota}):** S/ ${montoCuotaActual.toFixed(2)} (\`${cuotaPendiente.estado}\`)\n\n` +
-          `Puedes consultar o abonar tu cuota en el enlace oficial de Mercado Pago: ${enlaceActivo?.url_enlace || `http://localhost:3000/checkout/${orden.codigo_orden}`}`;
+          `Puedes consultar o abonar tu cuota en el enlace oficial de Mercado Pago: ${urlEnlace}`;
       }
     }
     // =========================================================================
     // REGLA 14: Consulta sobre Entregas, Asesor y Primera Sesión Académica
     // =========================================================================
     else if (/entrega|primera entrega|sesi[oó]n|cu[aá]ndo empieza|asesor|reuni[oó]n|meet/i.test(msgLower)) {
-      const totalComprometido = Number(orden.monto_comprometido || 0);
-      const totalCobrado = Number(orden.monto_cobrado || 0);
-      const saldoPendiente = Math.max(0, totalComprometido - totalCobrado);
+      const totalComprometido = finanzas.totalComprometido;
+      const saldoPendiente = finanzas.saldoPendiente;
       const asesorReal = orden.asesor_nombre || 'Dr. Carlos Alberto Méndez Vargas';
 
       const toolAcad = await this.logToolExecution(
@@ -1585,25 +1847,29 @@ export class PayersService {
         `• **Asesor Metodológico:** ${asesorReal}\n` +
         `• **Primera Sesión de Inducción:** Se coordina dentro de las primeras **24 a 48 horas hábiles** vía Google Meet.\n` +
         `• **Próximo Hito Académico:** Programado para el **${fechaEntrega}** (${cuotaPendiente.condicion || 'Entrega verificable'}).\n\n` +
-        (saldoPendiente > 0
-          ? `ℹ️ **Nota de pago:** Tu orden registra un saldo pendiente de **S/ ${saldoPendiente.toFixed(2)}** en tu cuota #${cuotaPendiente.numero_cuota} (\`${cuotaPendiente.estado}\`). Enlace oficial de Mercado Pago: ${enlaceActivo?.url_enlace || `http://localhost:3000/checkout/${orden.codigo_orden}`}`
-          : `🎉 Tu expediente se encuentra 100% al día.`);
+        (saldoPendiente <= 0
+          ? `🎉 Tu expediente se encuentra 100% al día y sin pagos pendientes.`
+          : finanzas.esCuotaBloqueada
+            ? `ℹ️ **Nota de pago:** Tu siguiente cuota (#${cuotaPendiente.numero_cuota}, S/ ${finanzas.montoCuotaExigible.toFixed(2)}) está en \`ESPERA_HITO\` y se habilita al aprobarse este hito. Saldo pendiente total: **S/ ${saldoPendiente.toFixed(2)}**.`
+            : `ℹ️ **Nota de pago:** Tu orden registra un saldo pendiente de **S/ ${saldoPendiente.toFixed(2)}** en tu cuota #${cuotaPendiente.numero_cuota} (\`${cuotaPendiente.estado}\`). Enlace oficial de Mercado Pago: ${await this.urlPagoVigente(orden, montoCuotaActual, enlaceActivo)}`);
     }
     // =========================================================================
     // FLUJO CONVERSACIONAL INTELIGENTE (Google Gemini + Contexto Transaccional)
     // =========================================================================
     else {
-      const totalComprometido = Number(orden.monto_comprometido || 0);
-      const totalCobrado = Number(orden.monto_cobrado || 0);
-      const saldoPendiente = Math.max(0, totalComprometido - totalCobrado);
-      const estaPagada = orden.estado === 'PAGADA' || (saldoPendiente === 0 && totalComprometido > 0);
+      const totalComprometido = finanzas.totalComprometido;
+      const totalCobrado = finanzas.totalCobrado;
+      const saldoPendiente = finanzas.saldoPendiente;
+      const estaPagada = finanzas.ordenLiquidada;
       const asesorReal = orden.asesor_nombre || 'Dr. Carlos Alberto Méndez Vargas';
 
       // 1. Invocar Google Gemini con el contexto en vivo de la base de datos
       let respuestaGemini: string | null = null;
       const apiKey = process.env.GEMINI_API_KEY;
-      const urlEnlace =
-        enlaceActivo?.url_enlace || `http://localhost:3000/checkout/${orden.codigo_orden}`;
+      const modeloGemini = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+      const urlEnlace = await this.urlPagoVigente(orden, montoCuotaActual, enlaceActivo);
+      const puedeCobrar = !finanzas.esCuotaBloqueada && saldoPendiente > 0;
+      const enlaceParaCliente = puedeCobrar ? urlEnlace : '(NO APLICA: no hay cuota exigible en este momento)';
 
       if (apiKey && apiKey.length > 10) {
         try {
@@ -1619,18 +1885,19 @@ export class PayersService {
             `- Total comprometido: S/ ${totalComprometido.toFixed(2)}\n` +
             `- Total pagado a la fecha: S/ ${totalCobrado.toFixed(2)}\n` +
             `- Saldo pendiente real: S/ ${saldoPendiente.toFixed(2)}\n` +
-            `- Cuota actual (#${cuotaPendiente.numero_cuota}): S/ ${montoCuotaActual.toFixed(2)} (Estado: ${cuotaPendiente.estado}, Vence: ${cuotaPendiente.fecha_vencimiento ? String(cuotaPendiente.fecha_vencimiento).slice(0, 10) : 'según hito'})\n` +
+            `- Cuota exigible (#${cuotaPendiente.numero_cuota}): S/ ${finanzas.montoCuotaExigible.toFixed(2)} (Estado: ${cuotaPendiente.estado}, Vence: ${cuotaPendiente.fecha_vencimiento ? String(cuotaPendiente.fecha_vencimiento).slice(0, 10) : 'según hito'})\n` +
             `- Asesor Metodológico Asignado: ${asesorReal}\n` +
             `- Pasarela Oficial: Mercado Pago (Checkout Pro)\n` +
-            `- Enlace Oficial de Pago Mercado Pago: ${urlEnlace}\n\n` +
-            `REGLAS ESTRICTAS DE RESPUESTA:\n` +
-            `1. Si el saldo pendiente es mayor a 0 (S/ ${saldoPendiente.toFixed(2)}), INDICA QUE TIENE UN SALDO PENDIENTE de S/ ${saldoPendiente.toFixed(2)}. Si la cuota actual está en ESPERA_HITO, explica que el pago de esa cuota se habilita apenas el asesor (${asesorReal}) apruebe el hito académico correspondiente.\n` +
-            `2. Si mencionas el enlace de pago, PROPORCIONA SIEMPRE este enlace exacto de Mercado Pago: ${urlEnlace}. PROHIBIDO mencionar "Culqi" o "Fase 4: CUSTOMERS"; nuestra única pasarela oficial es Mercado Pago.\n` +
-            `3. Responde en tono profesional, cálido, directo y conciso (máximo 2 párrafos).\n` +
-            `4. Pregunta exacta del estudiante: "${mensaje}"`;
+            `- Enlace Oficial de Pago Mercado Pago: ${enlaceParaCliente}\n\n` +
+            `REGLAS ESTRICTAS DE RESPUESTA (OBLIGATORIAS):\n` +
+            `1. Si el saldo pendiente es S/ 0.00, confirma que la orden está 100% CANCELADA, el servicio está ACTIVO y NO solicites ningún pago ni menciones enlaces.\n` +
+            `2. Si el saldo pendiente es mayor a 0 (S/ ${saldoPendiente.toFixed(2)}) pero la cuota actual está en ESPERA_HITO, explica que esa cuota se habilita apenas el asesor (${asesorReal}) apruebe el hito académico correspondiente y NO proporciones enlace de pago.\n` +
+            `3. Solo si hay una cuota exigible real, proporciona EXACTAMENTE este enlace de Mercado Pago: ${enlaceParaCliente}. PROHIBIDO mencionar "Culqi" o "Fase 4: CUSTOMERS"; nuestra única pasarela oficial es Mercado Pago.\n` +
+            `4. Responde en tono profesional, cálido, directo y conciso (máximo 2 párrafos).\n` +
+            `5. Pregunta exacta del estudiante: "${mensaje}"`;
 
           const gRes = await axios.post(
-            `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${apiKey}`,
+            `https://generativelanguage.googleapis.com/v1beta/models/${modeloGemini}:generateContent?key=${apiKey}`,
             {
               contents: [{ role: 'user', parts: [{ text: contextPrompt }] }],
             },
@@ -1639,7 +1906,10 @@ export class PayersService {
           if (gRes.data?.candidates?.[0]?.content?.parts?.[0]?.text) {
             let textoG = gRes.data.candidates[0].content.parts[0].text.trim();
             // Reemplazo de seguridad contra placeholders de LLM
-            textoG = textoG.replace(/ENLACE(_|\s*)DE(_|\s*)PAGO(\s*AQU[IÍ])?/gi, urlEnlace);
+            textoG = textoG.replace(
+              /ENLACE(_|\s*)DE(_|\s*)PAGO(\s*AQU[IÍ])?/gi,
+              puedeCobrar ? urlEnlace : '(no hay cuota exigible en este momento)',
+            );
             respuestaGemini = textoG;
           }
         } catch (e: any) {
@@ -1653,7 +1923,7 @@ export class PayersService {
           ordenPagoId,
           'consultar_agente_ia',
           { consulta: mensaje },
-          { motor: 'Google Gemini (gemini-3-flash-preview)', api_key_activa: true, respondido: true },
+          { motor: `Google Gemini (${modeloGemini})`, api_key_activa: true, respondido: true },
           95,
         );
         herramientasEjecutadas.push(toolAI);
@@ -1689,9 +1959,17 @@ export class PayersService {
             `• **Estado:** \`ACTIVO\`\n` +
             `• **Asesor Metodológico:** ${asesorReal}\n\n` +
             `¡Ya no tienes que realizar ningún pago! Tu asesor se comunicará contigo para la primera sesión.`;
+        } else if (finanzas.esCuotaBloqueada) {
+          respuesta =
+            `¡Hola **${orden.estudiante_nombre}**! Soy el agente de cobranza y activación de **INBESTIGA**.\n\n` +
+            `• **Estado en vivo de tu Orden ${orden.codigo_orden}:**\n` +
+            `• **Servicio:** ${orden.servicio_nombre}\n` +
+            `• **Total comprometido:** S/ ${totalComprometido.toFixed(2)}\n` +
+            `• **Total abonado:** S/ ${totalCobrado.toFixed(2)}\n` +
+            `• **Saldo pendiente:** S/ ${saldoPendiente.toFixed(2)}\n` +
+            `• **Siguiente cuota (#${cuotaPendiente.numero_cuota}):** S/ ${finanzas.montoCuotaExigible.toFixed(2)} (\`ESPERA_HITO\`)\n\n` +
+            `⏳ Esa cuota se habilita cuando tu asesor (**${asesorReal}**) apruebe el hito académico correspondiente; aún no es exigible y no hay ningún pago inmediato por realizar.`;
         } else {
-          const urlEnlace =
-            enlaceActivo?.url_enlace || `http://localhost:3000/checkout/${orden.codigo_orden}`;
           const toolLink = await this.logToolExecution(
             conversacionId,
             ordenPagoId,
@@ -2289,19 +2567,24 @@ export class PayersService {
       WHERE orden_pago_id = ${ordenPagoId};
     `);
 
-    // 4. Actualizar HANDOFF_LEADS para reflejar el acuerdo de cuotas en LEADS
+    // 4. Generar el enlace real de pago (Mercado Pago) y registrar el acuerdo en HANDOFF_LEADS
+    const urlLink = await this.generarUrlCheckoutMercadoPago({
+      codigoOrden,
+      monto: c1Monto,
+      servicio: `Cuota inicial ${codigoOrden}`,
+      nombre: `${ord.nombres} ${ord.apellidos}`.trim(),
+    });
     await this.prisma.$executeRawUnsafe(`
       UPDATE INBESTIGA_TESIS.dbo.HANDOFF_LEADS
       SET modalidad_acordada = '3 CUOTAS (30/40/30)',
           resumen_conversacion_leads = 'El estudiante pactó en LEADS abonar en 3 cuotas por hitos verificables: Cuota 1 inicial (S/ ${c1Monto.toFixed(2)}) para activar asesor, Cuota 2 (S/ ${c2Monto.toFixed(2)}) al entregar Cap 1, Cuota 3 (S/ ${c3Monto.toFixed(2)}) al informe final.',
-          primer_enlace_url = 'http://localhost:3000/checkout/${codigoOrden}',
+          primer_enlace_url = '${urlLink}',
           estado_traspaso = 'VALIDADO'
       WHERE orden_pago_id = ${ordenPagoId};
     `);
 
     // 5. Emitir nuevo ENLACE_PAGO activo para la Cuota 1
     const refLink = `lnk_leads_${ordenPagoId}_${Date.now().toString().slice(-5)}`;
-    const urlLink = `http://localhost:3000/checkout/${codigoOrden}`;
     await this.prisma.$executeRawUnsafe(`
       INSERT INTO INBESTIGA_TESIS.dbo.ENLACE_PAGO (
         orden_pago_id, cuota_id, medio_pago_id, referencia_externa, url_enlace, monto, fecha_envio, fecha_expiracion, estado
@@ -2394,6 +2677,7 @@ export class PayersService {
         c.contacto_id,
         c.nombres,
         c.apellidos,
+        c.telefono,
         c.telegram_chat_id
       FROM INBESTIGA_TESIS.dbo.ORDEN_PAGO o
       INNER JOIN INBESTIGA_TESIS.dbo.PROPUESTA pr ON pr.propuesta_id = o.propuesta_id
@@ -2408,13 +2692,12 @@ export class PayersService {
     }
     const ord = ordRows[0];
     const totalComprometido = Number(ord.monto_comprometido) || 1620.0;
-    const urlEnlace = `http://localhost:3000/checkout/${ord.codigo_orden}`;
 
     // Obtener cuota activa
     const cuotasRows: any[] = await this.prisma.$queryRawUnsafe(`
       SELECT TOP 1 * FROM INBESTIGA_TESIS.dbo.CUOTA_PAGO
       WHERE orden_pago_id = ${ordenPagoId} AND estado NOT IN ('PAGADA', 'ANULADA')
-      ORDER BY numero_cuota ASC;
+      ORDER BY CASE WHEN estado IN ('EXIGIBLE', 'ENLACE_ENVIADO', 'VENCIDA', 'POR_VERIFICAR') THEN 0 ELSE 1 END, numero_cuota ASC;
     `);
     const cuotaActiva = cuotasRows[0] || { cuota_id: 1, numero_cuota: 1, monto_programado: 486.0 };
     const cuotaId = Number(cuotaActiva.cuota_id);
@@ -2426,6 +2709,12 @@ export class PayersService {
 
     if (etapa === '4h') {
       secuencia = 'Recordatorio 4 h';
+      const urlEnlace = await this.generarUrlCheckoutMercadoPago({
+        codigoOrden: ord.codigo_orden,
+        monto: montoCuota,
+        servicio: `Recordatorio de pago ${ord.codigo_orden}`,
+        nombre: `${ord.nombres} ${ord.apellidos}`.trim(),
+      });
       textoTelegram =
         `⏰ *Recordatorio de Activación (4 Horas) — INBESTIGA.TESIS*\n\n` +
         `Hola *${ord.nombres}*, han transcurrido *4 horas* desde la emisión de tu propuesta y enlace oficial de pago.\n\n` +
@@ -2480,7 +2769,14 @@ export class PayersService {
       `Disparo forzado de alerta ${etapa.toUpperCase()} (${secuencia}) para orden ${ord.codigo_orden} - Estudiante: ${ord.nombres} ${ord.apellidos}`,
     );
 
-    // 3. Enviar mensaje en vivo a Telegram
+    // 3. Enviar mensaje en vivo por WhatsApp (canal prioritario) y Telegram (si está vinculado)
+    if (ord.telefono) {
+      try {
+        await this.whatsappService.enviarTextoSimple(ord.telefono, textoTelegram);
+      } catch (err: any) {
+        this.logger.warn(`No se pudo enviar la alerta por WhatsApp: ${err.message}`);
+      }
+    }
     if (ord.telegram_chat_id) {
       await this.enviarTelegramPush(ord.telegram_chat_id, textoTelegram);
     }
@@ -2491,6 +2787,7 @@ export class PayersService {
       secuencia,
       orden: ord.codigo_orden,
       estudiante: `${ord.nombres} ${ord.apellidos}`,
+      telefono: ord.telefono,
       telegramChatId: ord.telegram_chat_id,
       mensajeEnviado: textoTelegram,
       timestamp: new Date().toISOString(),

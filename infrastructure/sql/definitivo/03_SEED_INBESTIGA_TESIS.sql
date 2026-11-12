@@ -118,6 +118,33 @@ GO
 /* ============================================================================
    2. GENERACIÓN DE COHORTE: 304 BUYERS Y 304 LEADS (104 CON PROPUESTA ACEPTADA)
 ============================================================================ */
+-- Pool determinístico de nombres y apellidos peruanos realistas (coherente con 07_PATCH_NOMBRES_ESTUDIANTES.sql)
+DECLARE @PoolNombres TABLE (idx INT PRIMARY KEY, valor NVARCHAR(60));
+INSERT INTO @PoolNombres (idx, valor) VALUES
+ (1,'Ana'),(2,'Luis'),(3,'María'),(4,'Jorge'),(5,'Carla'),
+ (6,'Diego'),(7,'Sofía'),(8,'Miguel'),(9,'Valeria'),(10,'Andrés'),
+ (11,'Camila'),(12,'Renato'),(13,'Lucía'),(14,'Bryan'),(15,'Fiorella'),
+ (16,'Kevin'),(17,'Andrea'),(18,'Sebastián'),(19,'Paola'),(20,'Jhonatan'),
+ (21,'Gabriela'),(22,'Álvaro'),(23,'Melissa'),(24,'Bruno'),(25,'Angie'),
+ (26,'Rodrigo'),(27,'Yesenia'),(28,'Cristian'),(29,'Nicole'),(30,'Fabrizio'),
+ (31,'Rosa'),(32,'Marco'),(33,'Sandra'),(34,'Piero'),(35,'Katherine'),
+ (36,'Julio'),(37,'Milagros'),(38,'Renzo'),(39,'Diana'),(40,'César'),
+ (41,'Sheyla'),(42,'Giancarlo'),(43,'Alessandra'),(44,'Hugo'),(45,'Brenda'),
+ (46,'Enzo'),(47,'Yadira'),(48,'Aldo'),(49,'Pamela'),(50,'Víctor');
+
+DECLARE @PoolApellidos TABLE (idx INT PRIMARY KEY, valor NVARCHAR(60));
+INSERT INTO @PoolApellidos (idx, valor) VALUES
+ (1,'Quispe'),(2,'Flores'),(3,'Huamán'),(4,'García'),(5,'Rodríguez'),
+ (6,'Rojas'),(7,'Vargas'),(8,'Chávez'),(9,'Ramos'),(10,'Vásquez'),
+ (11,'Salazar'),(12,'Mendoza'),(13,'Castillo'),(14,'Espinoza'),(15,'Gutiérrez'),
+ (16,'Cruz'),(17,'Ríos'),(18,'Paredes'),(19,'Silva'),(20,'Díaz'),
+ (21,'Ruiz'),(22,'Campos'),(23,'Suárez'),(24,'Mamani'),(25,'Álvarez'),
+ (26,'Fernández'),(27,'Torres'),(28,'Reyes'),(29,'Gómez'),(30,'Sánchez'),
+ (31,'Medina'),(32,'Cordero'),(33,'Zavaleta'),(34,'Lozano'),(35,'Delgado'),
+ (36,'Acosta'),(37,'Cabrera'),(38,'Núñez'),(39,'Vega'),(40,'Peralta'),
+ (41,'Cáceres'),(42,'Bautista'),(43,'Villanueva'),(44,'Carrasco'),(45,'Aguirre'),
+ (46,'Palacios'),(47,'Bejarano'),(48,'Ticona'),(49,'Yupanqui'),(50,'Ancco');
+
 DECLARE @i INT = 1;
 WHILE @i <= 304
 BEGIN
@@ -151,8 +178,8 @@ BEGIN
 
     INSERT INTO dbo.CONTACTO (nombres, apellidos, telefono, email, consentimiento, no_contactar, ventana_whatsapp_tipo, ventana_whatsapp_vence, fecha_registro)
     VALUES (
-        CONCAT('Estudiante ', @i),
-        CONCAT('Apellido ', @i),
+        (SELECT valor FROM @PoolNombres WHERE idx = (@i % 50) + 1),
+        (SELECT valor FROM @PoolApellidos WHERE idx = ((@i * 7) % 50) + 1),
         CONCAT('519', RIGHT('00000000' + CAST(10000000 + @i AS VARCHAR(10)), 8)),
         CONCAT('estudiante', @i, '@unitru.edu.pe'),
         1, 0, '24H', DATEADD(HOUR, 24, GETDATE()), @fechaBase
@@ -196,6 +223,18 @@ BEGIN
 
     SET @i += 1;
 END
+GO
+
+/* ----------------------------------------------------------------------------
+   2b. Estudiantes REALES de prueba (WhatsApp real) — coherente con
+   07_PATCH_NOMBRES_ESTUDIANTES.sql. Órdenes PENDIENTES de pago:
+     contacto 44 -> ORD-2026-0044 (Harry Sánchez,    +51 919632928)
+     contacto 65 -> ORD-2026-0065 (Samira Miguel,    +51 956092165)
+     contacto 81 -> ORD-2026-0081 (Ricardo Velasquez, +51 961103226)
+---------------------------------------------------------------------------- */
+UPDATE dbo.CONTACTO SET nombres = N'Harry',   apellidos = N'Sánchez',   telefono = '51919632928' WHERE contacto_id = 44;
+UPDATE dbo.CONTACTO SET nombres = N'Samira',  apellidos = N'Miguel',    telefono = '51956092165' WHERE contacto_id = 65;
+UPDATE dbo.CONTACTO SET nombres = N'Ricardo', apellidos = N'Velasquez', telefono = '51961103226' WHERE contacto_id = 81;
 GO
 
 /* ============================================================================

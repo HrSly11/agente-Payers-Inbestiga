@@ -1,5 +1,15 @@
-import { Injectable, Logger, NotFoundException, BadRequestException, OnApplicationBootstrap } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  NotFoundException,
+  BadRequestException,
+  OnApplicationBootstrap,
+  Inject,
+  forwardRef,
+} from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service';
+import { MercadoPagoProvider } from '../payments/providers/mercadopago.provider';
+import { WhatsAppService } from '../whatsapp/whatsapp.service';
 
 /**
  * Milestone-gated installments (Option B):
@@ -8,19 +18,63 @@ import { PrismaService } from '../../database/prisma.service';
  *   and the student is notified with the checkout link.
  * - Reminders run only for EXIGIBLE installments; an unapproved milestone past its deadline
  *   is escalated internally (no message to the student).
+ *
+ * Canal prioritario: WhatsApp (Evolution API). Telegram se usa como canal secundario si el
+ * contacto compartió su chat_id. Los recordatorios son ESCALONADOS y con tono variable según
+ * los días restantes para el vencimiento.
  */
 @Injectable()
 export class CuotasHitoService implements OnApplicationBootstrap {
   private readonly logger = new Logger(CuotasHitoService.name);
   private interval: NodeJS.Timeout | null = null;
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly mercadoPagoProvider: MercadoPagoProvider,
+    @Inject(forwardRef(() => WhatsAppService))
+    private readonly whatsappService: WhatsAppService,
+  ) {}
 
   onApplicationBootstrap() {
     this.interval = setInterval(
       () => this.procesarRecordatorios().catch((e) => this.logger.error(`Error en recordatorios de cuotas: ${e.message}`)),
       60 * 60 * 1000,
     );
+  }
+
+  /**
+   * Enlace real de pago en Mercado Pago (Checkout Pro). Si la pasarela no responde, cae al
+   * checkout del frontend configurado en lugar de un enlace localhost inválido.
+   */
+  private async enlacePago(codigoOrden: string, monto: number, nombre?: string, email?: string): Promise<string> {
+    const montoSeguro = Number(monto) > 0 ? Number(monto) : 1;
+    try {
+      const res = await this.mercadoPagoProvider.crearCheckout({
+        cotizacionId: codigoOrden,
+        monto: montoSeguro,
+        moneda: 'PEN',
+        descripcion: `INBESTIGA.TESIS - ${codigoOrden}`,
+        clienteEmail: email || 'estudiante@inbestiga.pe',
+        clienteNombre: nombre,
+        cuotas: 1,
+      });
+      if (res?.checkoutUrl && !res.checkoutUrl.includes('localhost')) return res.checkoutUrl;
+    } catch (error: any) {
+      this.logger.warn(`No se pudo generar el enlace de Mercado Pago para ${codigoOrden}: ${error.message}`);
+    }
+    const base = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
+    return `${base}/checkout/${codigoOrden}`;
+  }
+
+  private async enviarWhatsApp(telefono: string | null, texto: string): Promise<boolean> {
+    if (!telefono) return false;
+    try {
+      const res = await this.whatsappService.enviarTextoSimple(telefono, texto);
+      return res.exito;
+    } catch (err: any) {
+      this.logger.warn(`No se pudo enviar WhatsApp a ${telefono}: ${err.message}`);
+      return false;
+    }
   }
 
   private async enviarTelegram(chatId: any, texto: string): Promise<boolean> {
@@ -46,9 +100,14 @@ export class CuotasHitoService implements OnApplicationBootstrap {
     }
   }
 
-  private checkoutUrl(codigo: string) {
-    const base = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
-    return `${base}/checkout/${codigo}`;
+  /**
+   * Envía el aviso por el canal prioritario (WhatsApp) y, si está disponible, por Telegram.
+   * Devuelve true si al menos un canal entregó el mensaje.
+   */
+  private async enviarAviso(cuota: any, texto: string): Promise<boolean> {
+    const enviadoWhatsApp = await this.enviarWhatsApp(cuota.telefono, texto);
+    const enviadoTelegram = await this.enviarTelegram(cuota.telegram_chat_id, texto);
+    return enviadoWhatsApp || enviadoTelegram;
   }
 
   private async registrarAlerta(
@@ -68,7 +127,7 @@ export class CuotasHitoService implements OnApplicationBootstrap {
   private async cuotasConContacto(where: string): Promise<any[]> {
     return this.prisma.$queryRawUnsafe(`
       SELECT cp.cuota_id, cp.orden_pago_id, cp.numero_cuota, cp.monto_programado, cp.condicion, cp.estado,
-             cp.fecha_vencimiento, op.codigo_orden, c.nombres, c.telegram_chat_id,
+             cp.fecha_vencimiento, op.codigo_orden, c.nombres, c.email, c.telefono, c.telegram_chat_id,
              DATEDIFF(DAY, CAST(GETDATE() AS DATE), cp.fecha_vencimiento) AS dias_para_vencer
       FROM INBESTIGA_TESIS.dbo.CUOTA_PAGO cp
       INNER JOIN INBESTIGA_TESIS.dbo.ORDEN_PAGO op ON op.orden_pago_id = cp.orden_pago_id
@@ -89,6 +148,59 @@ export class CuotasHitoService implements OnApplicationBootstrap {
     return rows.length > 0;
   }
 
+  private async horasDesdeUltimoEnvio(cuotaId: number): Promise<number> {
+    const rows: any[] = await this.prisma.$queryRawUnsafe(`
+      SELECT MAX(fecha_envio) AS ultimo FROM INBESTIGA_TESIS.dbo.ALERTA_COBRANZA WHERE cuota_id = ${cuotaId};
+    `);
+    const ultimo = rows[0]?.ultimo ? new Date(rows[0].ultimo).getTime() : 0;
+    if (!ultimo) return Number.POSITIVE_INFINITY;
+    return (Date.now() - ultimo) / (1000 * 60 * 60);
+  }
+
+  /**
+   * Plan escalonado y variable de recordatorios según los días restantes para el vencimiento.
+   * Cada etapa tiene su propia secuencia (evita duplicados) y una ventana mínima entre avisos.
+   */
+  private planRecordatorio(dias: number): { secuencia: string; gapHoras: number; escalado: boolean } {
+    if (dias < 0) return { secuencia: 'Escalado por vencimiento', gapHoras: 24, escalado: true };
+    if (dias === 0) return { secuencia: 'Vence hoy', gapHoras: 12, escalado: false };
+    if (dias === 1) return { secuencia: 'Vence mañana', gapHoras: 12, escalado: false };
+    if (dias <= 3) return { secuencia: 'Recordatorio cercano', gapHoras: 24, escalado: false };
+    if (dias <= 7) return { secuencia: 'Recordatorio semanal', gapHoras: 48, escalado: false };
+    if (dias <= 15) return { secuencia: 'Recordatorio quincenal', gapHoras: 96, escalado: false };
+    return { secuencia: 'Recordatorio mensual', gapHoras: 168, escalado: false };
+  }
+
+  private textoRecordatorio(c: any, dias: number, url: string): string {
+    const monto = Number(c.monto_programado).toFixed(2);
+    const saludo = `Hola ${c.nombres}`;
+    const pie = `\n\nPuedes abonar de forma segura aquí: ${url}`;
+
+    if (dias < 0) {
+      return (
+        `📌 ${saludo}, tu cuota ${c.numero_cuota} (S/ ${monto}) de la orden ${c.codigo_orden} venció hace ${Math.abs(dias)} día(s). ` +
+        `Derivamos tu caso a Coordinación de Caja para ayudarte a regularizarla sin recargos.` +
+        pie
+      );
+    }
+    if (dias === 0) {
+      return `⏰ ${saludo}, hoy vence tu cuota ${c.numero_cuota} (S/ ${monto}) de la orden ${c.codigo_orden}. Regularízala hoy y mantén tu asesoría al día.` + pie;
+    }
+    if (dias === 1) {
+      return `🔔 ${saludo}, tu cuota ${c.numero_cuota} (S/ ${monto}) vence mañana. Evita contratiempos con tu hito académico pagándola ahora.` + pie;
+    }
+    if (dias <= 3) {
+      return `📅 ${saludo}, te recordamos que tu cuota ${c.numero_cuota} (S/ ${monto}) vence en ${dias} días. Tu asesor ya validó el avance; solo falta este paso para continuar.` + pie;
+    }
+    if (dias <= 7) {
+      return `✍️ ${saludo}, tu cuota ${c.numero_cuota} de la orden ${c.codigo_orden} (S/ ${monto}) está habilitada y vence en ${dias} días. Te dejamos el enlace para que la programes con calma.` + pie;
+    }
+    if (dias <= 15) {
+      return `📩 ${saludo}, tienes una cuota habilitada de S/ ${monto} (cuota ${c.numero_cuota}) que vence en ${dias} días. Puedes adelantarla cuando mejor te convenga.` + pie;
+    }
+    return `ℹ️ ${saludo}, tu cuota ${c.numero_cuota} (S/ ${monto}) ya está habilitada y vence en ${dias} días. Aquí tienes el enlace por si deseas abonarla con anticipación.` + pie;
+  }
+
   /**
    * Advisor approves the academic milestone tied to an installment: ESPERA_HITO -> EXIGIBLE.
    */
@@ -107,14 +219,15 @@ export class CuotasHitoService implements OnApplicationBootstrap {
     `);
 
     const monto = Number(cuota.monto_programado);
+    const url = await this.enlacePago(cuota.codigo_orden, monto, cuota.nombres, cuota.email);
     const texto =
       `Hito académico aprobado\n\n` +
       `Hola ${cuota.nombres}, tu asesor validó este avance de tu proyecto. ` +
       `Ya está habilitada la cuota ${cuota.numero_cuota} de tu orden ${cuota.codigo_orden}.\n\n` +
       `• Monto: S/ ${monto.toFixed(2)}\n` +
       `• Vence: ${String(cuota.fecha_vencimiento).slice(0, 10)}\n` +
-      `• Pagar aquí: ${this.checkoutUrl(cuota.codigo_orden)}`;
-    const enviado = await this.enviarTelegram(cuota.telegram_chat_id, texto);
+      `• Pagar aquí: ${url}`;
+    const enviado = await this.enviarAviso(cuota, texto);
 
     await this.registrarAlerta(
       Number(cuota.orden_pago_id),
@@ -159,49 +272,40 @@ export class CuotasHitoService implements OnApplicationBootstrap {
   }
 
   /**
-   * Runs reminders for EXIGIBLE installments and escalates overdue unapproved milestones.
+   * Runs variable/staggered reminders for cobrable installments and escalates overdue ones.
    */
   async procesarRecordatorios() {
     const resumen = { recordatorios: 0, vencimientoProximo: 0, escaladosVencidas: 0, hitosVencidosSinAprobar: 0 };
 
-    const exigibles = await this.cuotasConContacto(`cp.estado = 'EXIGIBLE' AND cp.numero_cuota > 1`);
-    for (const c of exigibles) {
+    const cobrables = await this.cuotasConContacto(
+      `cp.estado IN ('EXIGIBLE', 'ENLACE_ENVIADO', 'VENCIDA') AND cp.numero_cuota > 1`,
+    );
+    for (const c of cobrables) {
       const cuotaId = Number(c.cuota_id);
       const ordenId = Number(c.orden_pago_id);
       const dias = Number(c.dias_para_vencer);
-      const monto = Number(c.monto_programado).toFixed(2);
-      const url = this.checkoutUrl(c.codigo_orden);
+      const plan = this.planRecordatorio(dias);
 
-      if (dias < 0) {
-        if (await this.yaEnviado(cuotaId, 'Escalado por vencimiento')) continue;
-        await this.registrarAlerta(ordenId, cuotaId, 'Escalado por vencimiento', 'Cuota de hito pendiente', 'ESCALADO', true);
-        await this.enviarTelegram(
-          c.telegram_chat_id,
-          `Tu cuota ${c.numero_cuota} (S/ ${monto}) de la orden ${c.codigo_orden} venció. ` +
-            `Derivamos tu caso a Coordinación de Caja para ayudarte a regularizarla: ${url}`,
-        );
-        resumen.escaladosVencidas++;
-      } else if (dias <= 1) {
-        if (await this.yaEnviado(cuotaId, 'Vence pronto')) continue;
-        await this.registrarAlerta(ordenId, cuotaId, 'Vence pronto', 'Cuota de hito pendiente', 'ENVIADO', false);
-        await this.enviarTelegram(
-          c.telegram_chat_id,
-          `Hola ${c.nombres}, tu cuota ${c.numero_cuota} (S/ ${monto}) vence ${dias === 0 ? 'hoy' : 'mañana'}. Pagá acá: ${url}`,
-        );
-        resumen.vencimientoProximo++;
-      } else {
-        const rec: any[] = await this.prisma.$queryRawUnsafe(`
-          SELECT MAX(fecha_envio) AS ultimo FROM INBESTIGA_TESIS.dbo.ALERTA_COBRANZA WHERE cuota_id = ${cuotaId};
-        `);
-        const ultimo = rec[0]?.ultimo ? new Date(rec[0].ultimo).getTime() : 0;
-        if (Date.now() - ultimo < 3 * 24 * 60 * 60 * 1000) continue;
-        await this.registrarAlerta(ordenId, cuotaId, 'Recordatorio 3 d', 'Cuota de hito pendiente', 'ENVIADO', false);
-        await this.enviarTelegram(
-          c.telegram_chat_id,
-          `Hola ${c.nombres}, te recordamos que tu cuota ${c.numero_cuota} (S/ ${monto}) está habilitada y vence en ${dias} días. Pagá acá: ${url}`,
-        );
-        resumen.recordatorios++;
-      }
+      if (await this.yaEnviado(cuotaId, plan.secuencia)) continue;
+      const horas = await this.horasDesdeUltimoEnvio(cuotaId);
+      if (horas < plan.gapHoras) continue;
+
+      const url = await this.enlacePago(c.codigo_orden, Number(c.monto_programado), c.nombres, c.email);
+      const texto = this.textoRecordatorio(c, dias, url);
+      const enviado = await this.enviarAviso(c, texto);
+
+      await this.registrarAlerta(
+        ordenId,
+        cuotaId,
+        plan.secuencia,
+        plan.escalado ? 'Cuota de hito vencida' : 'Cuota de hito pendiente',
+        enviado ? 'ENVIADO' : 'SIN_RESPUESTA',
+        plan.escalado,
+      );
+
+      if (plan.escalado) resumen.escaladosVencidas++;
+      else if (dias <= 1) resumen.vencimientoProximo++;
+      else resumen.recordatorios++;
     }
 
     // Milestone not approved by its deadline: internal escalation only (student is not charged or messaged).

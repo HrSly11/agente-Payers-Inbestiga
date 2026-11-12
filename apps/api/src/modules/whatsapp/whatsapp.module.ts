@@ -1,13 +1,15 @@
 import { Module, forwardRef } from '@nestjs/common';
-import { OpenWAProvider } from './openwa.provider';
+import { EvolutionProvider } from './evolution.provider';
+import { EvolutionDbService } from './evolution-db.service';
 import { WhatsAppService } from './whatsapp.service';
 import { WhatsAppController } from './whatsapp.controller';
 import { NegotiationModule } from '../negotiation/negotiation.module';
+import { PayersModule } from '../payers/payers.module';
 
 @Module({
-  imports: [forwardRef(() => NegotiationModule)],
+  imports: [forwardRef(() => NegotiationModule), forwardRef(() => PayersModule)],
   controllers: [WhatsAppController],
-  providers: [OpenWAProvider, WhatsAppService],
-  exports: [WhatsAppService, OpenWAProvider],
+  providers: [EvolutionProvider, EvolutionDbService, WhatsAppService],
+  exports: [WhatsAppService, EvolutionProvider, EvolutionDbService],
 })
 export class WhatsAppModule {}

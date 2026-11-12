@@ -15,6 +15,7 @@ import {
   Sparkles,
   ExternalLink,
   Receipt,
+  Settings,
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import ThemeToggle from '@/components/ThemeToggle';
@@ -54,6 +55,7 @@ export default function Navbar() {
     { href: '/admin/payers/reporte', label: 'Reporte BI R-PAYERS', icon: BarChart3 },
     { href: '/admin/payers/evaluacion', label: 'Evaluación (40)', icon: ShieldCheck },
     { href: '/admin/comprobantes', label: 'Comprobantes', icon: Receipt },
+    { href: '/admin/agent-config', label: 'Agente IA', icon: Settings },
   ];
 
   const isActive = (href: string) => {

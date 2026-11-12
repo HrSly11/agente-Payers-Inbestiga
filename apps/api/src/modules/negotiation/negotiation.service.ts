@@ -18,7 +18,7 @@ export class NegotiationService {
    * ACCIÓN CENTRAL: [ INICIAR NEGOCIACIÓN ]
    * El administrador pulsa este botón.
    * El sistema analiza el formulario del estudiante, genera el primer mensaje hiperpersonalizado,
-   * y lo envía automáticamente al WhatsApp del estudiante a través de OpenWA.
+   * y lo envía automáticamente al WhatsApp del estudiante a través de Evolution API.
    */
   async iniciarNegociacion(buyerId: string) {
     this.logger.log(`Iniciando negociación automática para Buyer ID: ${buyerId}`);
@@ -56,7 +56,7 @@ export class NegotiationService {
     // 2. El Agente IA genera el primer mensaje personalizado
     const mensajeInicial = await this.aiAgentService.generarMensajeInicial(buyer.id);
 
-    // 3. Enviar a través de OpenWA al WhatsApp real del estudiante
+    // 3. Enviar a través de Evolution API al WhatsApp real del estudiante
     const envioResultado = await this.whatsappService.enviarMensaje({
       conversacionId: conversacion.id,
       telefono: buyer.whatsapp,
@@ -100,7 +100,7 @@ export class NegotiationService {
   }
 
   /**
-   * Procesa la respuesta entrante del estudiante vía OpenWA Webhook o simulación en vivo.
+   * Procesa la respuesta entrante del estudiante vía Webhook de Evolution API o simulación en vivo.
    */
   async procesarMensajeEstudiante(telefono: string, contenido: string) {
     const cleanPhone = telefono.replace(/\D/g, '');
@@ -187,7 +187,7 @@ export class NegotiationService {
       ultimoMensajeCliente: contenido,
     });
 
-    // 3. Despachar la respuesta de la IA a través de WhatsApp / OpenWA
+    // 3. Despachar la respuesta de la IA a través de WhatsApp / Evolution API
     const envioResultado = await this.whatsappService.enviarMensaje({
       conversacionId: conversacion.id,
       telefono: buyer.whatsapp,
