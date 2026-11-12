@@ -115,6 +115,50 @@
   animation: pulseGlow 3s ease-in-out infinite;
 }
 
+@keyframes fadeIn {
+  0% {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes spinSlow {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.animate-fade-in {
+  animation: fadeIn 0.35s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.animate-spin-slow {
+  animation: spinSlow 9s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-aurora,
+  .animate-dash-flow,
+  .animate-float-slow,
+  .animate-pulse-glow,
+  .animate-spin-slow,
+  .shimmer-btn::after {
+    animation: none !important;
+  }
+
+  .animate-fade-in,
+  .animate-message-pop {
+    animation-duration: 0.01ms !important;
+  }
+}
+
 .shimmer-btn {
   position: relative;
   overflow: hidden;

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
+import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import {
   Send,
   MessageSquare,
@@ -22,9 +23,13 @@ import {
   Activity,
   FileCheck2,
   Zap,
-  ShieldCheck,
+  Link2,
 } from 'lucide-react';
 import { api } from '@/lib/api';
+import {
+  AcademicReactiveAssistant,
+  ThesisJourneyTrack,
+} from '@/components/payers/ThesisInteractiveWidgets';
 
 const QUICK_PROMPTS = [
   '¿Cuál es mi siguiente cuota y cuándo debería pagar?',
@@ -40,7 +45,10 @@ const FEATURED_CLIENTS = [
   { id: 15, label: 'Orden #0015', tag: 'Alerta Cobranza' },
 ];
 
+type PipelineFocusTarget = 'CRONOGRAMA' | 'CHAT' | 'PASARELA' | 'RUTA_TESIS' | null;
+
 export default function PayersCommandCenterPage() {
+  const prefersReducedMotion = useReducedMotion();
   const [selectedOrdenId, setSelectedOrdenId] = useState<number>(42);
   const [searchCliente, setSearchCliente] = useState<string>('');
   const [ordenDetalle, setOrdenDetalle] = useState<any | null>(null);
@@ -49,9 +57,18 @@ export default function PayersCommandCenterPage() {
   const [actionBusy, setActionBusy] = useState<string | null>(null);
   const [actionBanner, setActionBanner] = useState<string | null>(null);
 
+  // Interactive Pipeline Focus & Thesis Milestone Highlight State
+  const [activePipelineStage, setActivePipelineStage] =
+    useState<PipelineFocusTarget>(null);
+  const [activeCuotaHighlight, setActiveCuotaHighlight] = useState<number | null>(
+    null,
+  );
+  const [celebrateCounter, setCelebrateCounter] = useState<number>(0);
+
   // Live Chat Stream State
   const [chatInput, setChatInput] = useState<string>('');
   const [chatSending, setChatSending] = useState<boolean>(false);
+  const [activePromptChip, setActivePromptChip] = useState<string | null>(null);
   const [recentTools, setRecentTools] = useState<string[]>([]);
   const chatScrollRef = useRef<HTMLDivElement>(null);
 
@@ -78,6 +95,7 @@ export default function PayersCommandCenterPage() {
     cargarOrdenSeleccionada(selectedOrdenId);
     setActionBanner(null);
     setRecentTools([]);
+    setActiveCuotaHighlight(null);
   }, [selectedOrdenId, cargarOrdenSeleccionada]);
 
   useEffect(() => {
@@ -99,12 +117,29 @@ export default function PayersCommandCenterPage() {
     );
   }, [overview, searchCliente]);
 
+  const handleFocusSection = (
+    stage: PipelineFocusTarget,
+    elementId: string,
+  ) => {
+    setActivePipelineStage((prev) => (prev === stage ? null : stage));
+    if (typeof document !== 'undefined') {
+      const el = document.getElementById(elementId);
+      if (el) {
+        el.scrollIntoView({
+          behavior: prefersReducedMotion ? 'auto' : 'smooth',
+          block: 'nearest',
+        });
+      }
+    }
+  };
+
   const handleToggleHito = async (numeroCuota: number, estadoActual: string) => {
     setActionBusy(`cuota-${numeroCuota}`);
     setActionBanner(null);
     try {
       if (estadoActual === 'ESPERA_HITO') {
         await api.aprobarHitoCuota(selectedOrdenId, numeroCuota);
+        setCelebrateCounter((c) => c + 1);
         setActionBanner(
           `Hito académico validado: Cuota #${numeroCuota} habilitada a EXIGIBLE y notificada por Telegram.`,
         );
@@ -116,7 +151,9 @@ export default function PayersCommandCenterPage() {
       }
       await cargarOrdenSeleccionada(selectedOrdenId);
     } catch (err: any) {
-      setActionBanner(`Error: ${err?.message || 'No se pudo actualizar el estado del hito'}`);
+      setActionBanner(
+        `Error: ${err?.message || 'No se pudo actualizar el estado del hito'}`,
+      );
     } finally {
       setActionBusy(null);
     }
@@ -142,15 +179,23 @@ export default function PayersCommandCenterPage() {
     const msg = (texto ?? chatInput).trim();
     if (!msg || chatSending) return;
     setChatSending(true);
-    if (!texto) setChatInput('');
+    if (texto) {
+      setActivePromptChip(texto);
+    } else {
+      setChatInput('');
+    }
     try {
       const res = await api.enviarMensajePayerAgent(selectedOrdenId, msg);
-      setRecentTools((res?.herramientasEjecutadas || []).map((h: any) => h.herramienta));
+      const tools = (res?.herramientasEjecutadas || []).map(
+        (h: any) => h.herramienta,
+      );
+      setRecentTools(tools);
       await cargarOrdenSeleccionada(selectedOrdenId);
     } catch (err: any) {
       setActionBanner(`Error consultando al agente: ${err?.message}`);
     } finally {
       setChatSending(false);
+      setActivePromptChip(null);
     }
   };
 
@@ -163,7 +208,9 @@ export default function PayersCommandCenterPage() {
   );
 
   const nombreEstudiante =
-    orden?.estudiante_nombre || vistaAnalitica?.estudiante || 'Cargando expediente...';
+    orden?.estudiante_nombre ||
+    vistaAnalitica?.estudiante ||
+    'Cargando expediente...';
   const codigoOrdenActual =
     orden?.codigo_orden ||
     vistaAnalitica?.codigo_orden ||
@@ -176,17 +223,28 @@ export default function PayersCommandCenterPage() {
   const montoCobrado = Number(orden?.monto_cobrado ?? 0);
   const saldoPendiente = Math.max(0, montoComprometido - montoCobrado);
   const pctCobrado =
-    montoComprometido > 0 ? Math.min(100, Math.round((montoCobrado / montoComprometido) * 100)) : 0;
+    montoComprometido > 0
+      ? Math.min(100, Math.round((montoCobrado / montoComprometido) * 100))
+      : 0;
 
   const montoExigibleHoy = cuotas
-    .filter((c) => ['EXIGIBLE', 'ENLACE_ENVIADO', 'VENCIDA', 'POR_VERIFICAR'].includes(c.estado))
+    .filter((c) =>
+      ['EXIGIBLE', 'ENLACE_ENVIADO', 'VENCIDA', 'POR_VERIFICAR'].includes(
+        c.estado,
+      ),
+    )
     .reduce((acc, c) => acc + Number(c.monto_programado || 0), 0);
   const montoEsperaHito = cuotas
     .filter((c) => c.estado === 'ESPERA_HITO')
     .reduce((acc, c) => acc + Number(c.monto_programado || 0), 0);
 
   const pctExigible =
-    montoComprometido > 0 ? Math.min(100 - pctCobrado, Math.round((montoExigibleHoy / montoComprometido) * 100)) : 0;
+    montoComprometido > 0
+      ? Math.min(
+          100 - pctCobrado,
+          Math.round((montoExigibleHoy / montoComprometido) * 100),
+        )
+      : 0;
   const pctEsperaHito = Math.max(0, 100 - pctCobrado - pctExigible);
 
   // Anillo SVG (radio 36 -> circunferencia = 226.2)
@@ -194,7 +252,21 @@ export default function PayersCommandCenterPage() {
   const strokeDashoffset = circumference - (pctCobrado / 100) * circumference;
 
   const tienePagoConfirmado = pagosConfirmados.length > 0 || montoCobrado > 0;
-  const siguienteCuota = cuotas.find((c) => c.estado !== 'PAGADA' && c.estado !== 'ANULADA');
+  const tieneCuotaActivaOPagada =
+    tienePagoConfirmado ||
+    cuotas.some((c) =>
+      ['EXIGIBLE', 'ENLACE_ENVIADO', 'POR_VERIFICAR', 'PAGADA'].includes(
+        c.estado,
+      ),
+    );
+  const siguienteCuota = cuotas.find(
+    (c) => c.estado !== 'PAGADA' && c.estado !== 'ANULADA',
+  );
+
+  // Conectores vivos entre las 4 etapas del pipeline según el estado real de la orden
+  const connector1Active = Boolean(orden || cuotas.length > 0);
+  const connector2Active = tieneCuotaActivaOPagada;
+  const connector3Active = tienePagoConfirmado;
 
   return (
     <div className="relative space-y-6 pb-8">
@@ -211,7 +283,7 @@ export default function PayersCommandCenterPage() {
       </div>
 
       {/* =====================================================================
-          BARRA SUPERIOR DE TELEMETRÍA & FLUJO EN VIVO DE 4 NODOS (CON PAQUETES ANIMADOS)
+          BARRA SUPERIOR DE TELEMETRÍA & PIPELINE VIVO DE 4 NODOS (CON CONECTORES SVG Y PARTÍCULAS)
           ===================================================================== */}
       <section className="glass-panel rounded-3xl p-5 sm:p-6 border border-slate-200/80 dark:border-slate-800/90 relative overflow-hidden">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-5 border-b border-slate-200/70 dark:border-slate-800/80">
@@ -221,7 +293,9 @@ export default function PayersCommandCenterPage() {
                 <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
                 <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500" />
               </span>
-              <span>MOTOR AUTÓNOMO PAYERS v2.0 · GEMINI 3 FLASH + 11 TOOLS DETERMINÍSTICAS</span>
+              <span>
+                MOTOR AUTÓNOMO PAYERS v2.0 · GEMINI 3 FLASH + 11 TOOLS DETERMINÍSTICAS
+              </span>
             </div>
             <h1 className="text-2xl sm:text-3xl font-black text-slate-900 dark:text-white tracking-tight">
               Orquestador de Cobranza,{' '}
@@ -243,7 +317,9 @@ export default function PayersCommandCenterPage() {
               <Send className="w-4 h-4" />
               <div>
                 <div className="leading-none">Telegram Bot</div>
-                <div className="text-[10px] font-normal text-sky-100 mt-0.5">@inbestiga_tesis_bot</div>
+                <div className="text-[10px] font-normal text-sky-100 mt-0.5">
+                  @inbestiga_tesis_bot
+                </div>
               </div>
               <ExternalLink className="w-3.5 h-3.5 opacity-80" />
             </a>
@@ -264,11 +340,106 @@ export default function PayersCommandCenterPage() {
           </div>
         </div>
 
-        {/* PIPELINE INTERACTIVO DE 4 ETAPAS CON LÍNEAS SVG ANIMADAS */}
-        <div className="pt-5">
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 relative">
+        {/* PIPELINE INTERACTIVO DE 4 ETAPAS CON CONECTORES SVG Y PARTÍCULAS LUMINOSAS */}
+        <div className="pt-5 relative">
+          {/* Conectores SVG en escritorio (visibles en lg) entre los 4 nodos */}
+          <svg
+            viewBox="0 0 1200 60"
+            preserveAspectRatio="none"
+            className="hidden lg:block absolute inset-x-0 top-1/2 -translate-y-1/2 w-full h-14 pointer-events-none z-0 overflow-visible"
+          >
+            {/* Conector 1 -> 2 (Handoff Leads a Agente Cobranza) */}
+            <line
+              x1="275"
+              y1="30"
+              x2="315"
+              y2="30"
+              stroke={connector1Active ? '#10b981' : '#64748b'}
+              strokeWidth="2.5"
+              strokeDasharray="4 5"
+              className={connector1Active ? 'animate-dash-flow' : 'opacity-30'}
+            />
+            {connector1Active && !prefersReducedMotion && (
+              <motion.circle
+                cx="275"
+                cy="30"
+                r="4"
+                fill="#10b981"
+                animate={{ cx: [275, 315], opacity: [0.3, 1, 0.3] }}
+                transition={{ duration: 1.4, repeat: Infinity, ease: 'linear' }}
+              />
+            )}
+
+            {/* Conector 2 -> 3 (Agente Cobranza a Mercado Pago) */}
+            <line
+              x1="575"
+              y1="30"
+              x2="615"
+              y2="30"
+              stroke={connector2Active ? '#0ea5e9' : '#64748b'}
+              strokeWidth="2.5"
+              strokeDasharray="4 5"
+              className={connector2Active ? 'animate-dash-flow' : 'opacity-30'}
+            />
+            {connector2Active && !prefersReducedMotion && (
+              <motion.circle
+                cx="575"
+                cy="30"
+                r="4"
+                fill="#0ea5e9"
+                animate={{ cx: [575, 615], opacity: [0.3, 1, 0.3] }}
+                transition={{
+                  duration: 1.4,
+                  repeat: Infinity,
+                  ease: 'linear',
+                  delay: 0.35,
+                }}
+              />
+            )}
+
+            {/* Conector 3 -> 4 (Mercado Pago a Hitos & Asesor) */}
+            <line
+              x1="875"
+              y1="30"
+              x2="915"
+              y2="30"
+              stroke={connector3Active ? '#a855f7' : '#64748b'}
+              strokeWidth="2.5"
+              strokeDasharray="4 5"
+              className={connector3Active ? 'animate-dash-flow' : 'opacity-30'}
+            />
+            {connector3Active && !prefersReducedMotion && (
+              <motion.circle
+                cx="875"
+                cy="30"
+                r="4"
+                fill="#a855f7"
+                animate={{ cx: [875, 915], opacity: [0.3, 1, 0.3] }}
+                transition={{
+                  duration: 1.4,
+                  repeat: Infinity,
+                  ease: 'linear',
+                  delay: 0.7,
+                }}
+              />
+            )}
+          </svg>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 relative z-10">
             {/* Etapa 1: Traspaso LEADS */}
-            <div className="relative rounded-2xl border border-emerald-500/35 bg-emerald-500/5 dark:bg-emerald-950/20 p-3.5 flex items-center gap-3 transition-all hover:border-emerald-500/70">
+            <motion.button
+              type="button"
+              whileHover={prefersReducedMotion ? undefined : { y: -2 }}
+              whileTap={prefersReducedMotion ? undefined : { scale: 0.98 }}
+              onClick={() =>
+                handleFocusSection('CRONOGRAMA', 'seccion-cronograma')
+              }
+              className={`text-left relative rounded-2xl border p-3.5 flex items-center gap-3 transition-all cursor-pointer ${
+                activePipelineStage === 'CRONOGRAMA'
+                  ? 'border-emerald-500 ring-2 ring-emerald-500/40 bg-emerald-500/10 dark:bg-emerald-950/35'
+                  : 'border-emerald-500/35 bg-emerald-500/5 dark:bg-emerald-950/20 hover:border-emerald-500/70'
+              }`}
+            >
               <div className="w-10 h-10 rounded-xl bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 flex items-center justify-center shrink-0">
                 <FileCheck2 className="w-5 h-5" />
               </div>
@@ -288,10 +459,20 @@ export default function PayersCommandCenterPage() {
                   Precio congelado: S/ {montoComprometido.toFixed(2)}
                 </div>
               </div>
-            </div>
+            </motion.button>
 
             {/* Etapa 2: Cronograma & Agente IA */}
-            <div className="relative rounded-2xl border border-sky-500/35 bg-sky-500/5 dark:bg-sky-950/20 p-3.5 flex items-center gap-3 transition-all hover:border-sky-500/70">
+            <motion.button
+              type="button"
+              whileHover={prefersReducedMotion ? undefined : { y: -2 }}
+              whileTap={prefersReducedMotion ? undefined : { scale: 0.98 }}
+              onClick={() => handleFocusSection('CHAT', 'seccion-chat')}
+              className={`text-left relative rounded-2xl border p-3.5 flex items-center gap-3 transition-all cursor-pointer ${
+                activePipelineStage === 'CHAT'
+                  ? 'border-sky-500 ring-2 ring-sky-500/40 bg-sky-500/10 dark:bg-sky-950/35'
+                  : 'border-sky-500/35 bg-sky-500/5 dark:bg-sky-950/20 hover:border-sky-500/70'
+              }`}
+            >
               <div className="w-10 h-10 rounded-xl bg-sky-500/20 text-sky-600 dark:text-sky-400 flex items-center justify-center shrink-0">
                 <Bot className="w-5 h-5" />
               </div>
@@ -313,14 +494,20 @@ export default function PayersCommandCenterPage() {
                     : '100% Liquidado'}
                 </div>
               </div>
-            </div>
+            </motion.button>
 
             {/* Etapa 3: Pasarela Mercado Pago */}
-            <div
-              className={`relative rounded-2xl border p-3.5 flex items-center gap-3 transition-all ${
-                tienePagoConfirmado
-                  ? 'border-emerald-500/40 bg-emerald-500/5 dark:bg-emerald-950/20'
-                  : 'border-amber-500/40 bg-amber-500/5 dark:bg-amber-950/20'
+            <motion.button
+              type="button"
+              whileHover={prefersReducedMotion ? undefined : { y: -2 }}
+              whileTap={prefersReducedMotion ? undefined : { scale: 0.98 }}
+              onClick={() => handleFocusSection('PASARELA', 'seccion-pasarela')}
+              className={`text-left relative rounded-2xl border p-3.5 flex items-center gap-3 transition-all cursor-pointer ${
+                activePipelineStage === 'PASARELA'
+                  ? 'border-emerald-500 ring-2 ring-emerald-500/40 bg-emerald-500/10 dark:bg-emerald-950/35'
+                  : tienePagoConfirmado
+                    ? 'border-emerald-500/40 bg-emerald-500/5 dark:bg-emerald-950/20 hover:border-emerald-500/70'
+                    : 'border-amber-500/40 bg-amber-500/5 dark:bg-amber-950/20 hover:border-amber-500/70'
               }`}
             >
               <div
@@ -356,14 +543,22 @@ export default function PayersCommandCenterPage() {
                     : 'Esperando confirmación Webhook'}
                 </div>
               </div>
-            </div>
+            </motion.button>
 
             {/* Etapa 4: Activación & Hitos del Asesor */}
-            <div
-              className={`relative rounded-2xl border p-3.5 flex items-center gap-3 transition-all ${
-                tienePagoConfirmado
-                  ? 'border-purple-500/40 bg-purple-500/5 dark:bg-purple-950/20'
-                  : 'border-slate-300 dark:border-slate-800 bg-slate-100/50 dark:bg-slate-900/40 opacity-75'
+            <motion.button
+              type="button"
+              whileHover={prefersReducedMotion ? undefined : { y: -2 }}
+              whileTap={prefersReducedMotion ? undefined : { scale: 0.98 }}
+              onClick={() =>
+                handleFocusSection('RUTA_TESIS', 'seccion-ruta-tesis')
+              }
+              className={`text-left relative rounded-2xl border p-3.5 flex items-center gap-3 transition-all cursor-pointer ${
+                activePipelineStage === 'RUTA_TESIS'
+                  ? 'border-purple-500 ring-2 ring-purple-500/40 bg-purple-500/10 dark:bg-purple-950/35'
+                  : tienePagoConfirmado
+                    ? 'border-purple-500/40 bg-purple-500/5 dark:bg-purple-950/20 hover:border-purple-500/70'
+                    : 'border-slate-300 dark:border-slate-800 bg-slate-100/50 dark:bg-slate-900/40 opacity-85 hover:opacity-100'
               }`}
             >
               <div className="w-10 h-10 rounded-xl bg-purple-500/20 text-purple-600 dark:text-purple-400 flex items-center justify-center shrink-0">
@@ -387,18 +582,41 @@ export default function PayersCommandCenterPage() {
                     : 'Cuota habilitada para cobro'}
                 </div>
               </div>
-            </div>
+            </motion.button>
           </div>
         </div>
+      </section>
+
+      {/* =====================================================================
+          FEATURE 1: RUTA INTERACTIVA DE TESIS ("CAMINO A LA SUSTENTACIÓN")
+          ===================================================================== */}
+      <section id="seccion-ruta-tesis">
+        <ThesisJourneyTrack
+          cuotas={cuotas}
+          ordenDetalle={ordenDetalle}
+          actionBusy={actionBusy}
+          onToggleHito={handleToggleHito}
+          activeCuotaHighlight={activeCuotaHighlight}
+          onSelectCuotaHighlight={setActiveCuotaHighlight}
+          isSectionFocused={activePipelineStage === 'RUTA_TESIS'}
+          onTriggerCelebration={() => setCelebrateCounter((c) => c + 1)}
+        />
       </section>
 
       {/* =====================================================================
           WORKSPACE INTERACTIVO EN VIVO (7 COLS CONSOLA CHAT IA / 5 COLS SWITCHBOARD FINANCIERO)
           ===================================================================== */}
       <section className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
-        {/* COLUMNA IZQUIERDA (7 COLS): STREAM CONVERSACIONAL EN VIVO CON EL AGENTE IA */}
-        <div className="lg:col-span-7 glass-panel rounded-3xl border border-slate-200/80 dark:border-slate-800/90 flex flex-col justify-between overflow-hidden">
-          {/* Header de la Consola del Agente */}
+        {/* COLUMNA IZQUIERDA (7 COLS): STREAM CONVERSACIONAL EN VIVO CON EL AGENTE IA + ASISTENTE ACADÉMICO REACTIVO */}
+        <div
+          id="seccion-chat"
+          className={`lg:col-span-7 glass-panel rounded-3xl border flex flex-col justify-between overflow-hidden transition-all duration-300 ${
+            activePipelineStage === 'CHAT'
+              ? 'border-sky-500 ring-2 ring-sky-500/35 shadow-lg shadow-sky-500/10'
+              : 'border-slate-200/80 dark:border-slate-800/90'
+          }`}
+        >
+          {/* Header de la Consola del Agente + Asistente Académico Reactivo (Feature 2) */}
           <div className="px-5 py-4 border-b border-slate-200/80 dark:border-slate-800/80 bg-slate-50/60 dark:bg-slate-950/60 flex flex-wrap items-center justify-between gap-3">
             <div className="flex items-center gap-3">
               <div className="relative">
@@ -408,7 +626,7 @@ export default function PayersCommandCenterPage() {
                 <span className="absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full bg-emerald-400 border-2 border-white dark:border-slate-950" />
               </div>
               <div>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 flex-wrap">
                   <h2 className="text-sm sm:text-base font-black text-slate-900 dark:text-white">
                     Stream Bidireccional del Agente IA PAYERS
                   </h2>
@@ -417,19 +635,34 @@ export default function PayersCommandCenterPage() {
                   </span>
                 </div>
                 <p className="text-xs text-slate-500 dark:text-slate-400">
-                  Cliente activo: <strong className="text-slate-800 dark:text-slate-200">{nombreEstudiante}</strong> ({codigoOrdenActual})
+                  Cliente activo:{' '}
+                  <strong className="text-slate-800 dark:text-slate-200">
+                    {nombreEstudiante}
+                  </strong>{' '}
+                  ({codigoOrdenActual})
                 </p>
               </div>
             </div>
 
-            <Link
-              href={`/admin/payers/live-chat?orden=${selectedOrdenId}`}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-200/80 hover:bg-slate-300 dark:bg-slate-800 dark:hover:bg-slate-700 text-xs font-bold text-slate-800 dark:text-slate-200 transition-colors"
-            >
-              <MessageSquare className="w-3.5 h-3.5 text-emerald-500" />
-              <span>Pantalla Completa</span>
-              <ArrowRight className="w-3 h-3" />
-            </Link>
+            <div className="flex items-center gap-2.5 flex-wrap">
+              {/* Feature 2: Asistente Académico Reactivo (Tesis / Birrete / Pluma viva) */}
+              <AcademicReactiveAssistant
+                isThinking={chatSending}
+                celebrateTrigger={celebrateCounter}
+                hasConfirmedPayment={tienePagoConfirmado}
+                studentName={nombreEstudiante.split(' ')[0]}
+                compact
+              />
+
+              <Link
+                href={`/admin/payers/live-chat?orden=${selectedOrdenId}`}
+                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-200/80 hover:bg-slate-300 dark:bg-slate-800 dark:hover:bg-slate-700 text-xs font-bold text-slate-800 dark:text-slate-200 transition-colors"
+              >
+                <MessageSquare className="w-3.5 h-3.5 text-emerald-500" />
+                <span>Pantalla Completa</span>
+                <ArrowRight className="w-3 h-3" />
+              </Link>
+            </div>
           </div>
 
           {/* Historial de Mensajes en Vivo (con burbujas animadas) */}
@@ -446,7 +679,8 @@ export default function PayersCommandCenterPage() {
               </div>
             ) : (
               mensajes.map((m: any, idx: number) => {
-                const esCliente = m.emisor === 'ESTUDIANTE' || m.emisor === 'CLIENTE';
+                const esCliente =
+                  m.emisor === 'ESTUDIANTE' || m.emisor === 'CLIENTE';
                 return (
                   <div
                     key={m.mensaje_id || idx}
@@ -468,7 +702,9 @@ export default function PayersCommandCenterPage() {
                       }`}
                     >
                       <div className="flex items-center justify-between gap-3 mb-1 text-[10px] opacity-75 font-mono">
-                        <span>{esCliente ? nombreEstudiante : 'Agente IA PAYERS'}</span>
+                        <span>
+                          {esCliente ? nombreEstudiante : 'Agente IA PAYERS'}
+                        </span>
                         <span>
                           {m.fecha_hora
                             ? new Date(m.fecha_hora).toLocaleTimeString([], {
@@ -491,44 +727,98 @@ export default function PayersCommandCenterPage() {
               })
             )}
 
+            {/* Chip de prompt rápido que viaja con transición física de resorte al stream */}
+            <AnimatePresence>
+              {activePromptChip && (
+                <motion.div
+                  layoutId={`prompt-${activePromptChip}`}
+                  initial={{ opacity: 0, y: 18, scale: 0.92 }}
+                  animate={{ opacity: 1, y: 0, scale: 1 }}
+                  exit={{ opacity: 0, scale: 0.95 }}
+                  transition={{ type: 'spring', stiffness: 260, damping: 20 }}
+                  className="flex justify-end"
+                >
+                  <div className="rounded-2xl rounded-br-sm bg-emerald-600/90 text-white px-4 py-2 text-xs font-semibold shadow-md">
+                    {activePromptChip}
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
             {chatSending && (
               <div className="flex items-center gap-2.5 text-xs text-emerald-600 dark:text-emerald-400 font-semibold animate-pulse">
                 <div className="w-7 h-7 rounded-xl bg-emerald-500/20 flex items-center justify-center">
                   <Activity className="w-4 h-4 animate-spin" />
                 </div>
-                <span>Ejecutando herramientas determinísticas y consultando contexto SQL Server...</span>
+                <span>
+                  Ejecutando herramientas determinísticas y consultando contexto SQL Server...
+                </span>
               </div>
             )}
           </div>
 
-          {/* Barra Inferior: Prompts Rápidos + Input de Comando */}
+          {/* Barra Inferior: Bloques Encastrables de Tools + Prompts Rápidos con Spring + Input */}
           <div className="p-4 border-t border-slate-200/80 dark:border-slate-800/80 bg-white/80 dark:bg-slate-900/80 space-y-3">
-            {recentTools.length > 0 && (
-              <div className="flex items-center gap-1.5 flex-wrap text-[11px]">
-                <span className="text-slate-400 font-semibold">Última herramienta ejecutada:</span>
-                {recentTools.map((t) => (
-                  <span
-                    key={t}
-                    className="inline-flex items-center gap-1 font-mono text-[10px] px-2 py-0.5 rounded-md bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30"
-                  >
-                    <Wrench className="w-3 h-3" />
-                    {t}
+            {/* Bloques Encastrables de Herramientas (Interlocking Tool Blocks) */}
+            <AnimatePresence>
+              {recentTools.length > 0 && (
+                <motion.div
+                  initial={{ opacity: 0, y: 6 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: 4 }}
+                  className="flex items-center gap-1.5 flex-wrap text-[11px]"
+                >
+                  <span className="text-slate-400 font-semibold mr-1">
+                    Cadena de Tools ejecutadas:
                   </span>
-                ))}
-              </div>
-            )}
+                  {recentTools.map((t, idx) => (
+                    <motion.div
+                      key={`${t}-${idx}`}
+                      initial={
+                        prefersReducedMotion
+                          ? { opacity: 1 }
+                          : { opacity: 0, x: -12, scale: 0.88 }
+                      }
+                      animate={{ opacity: 1, x: 0, scale: 1 }}
+                      transition={{
+                        type: 'spring',
+                        stiffness: 280,
+                        damping: 18,
+                        delay: idx * 0.08,
+                      }}
+                      className="inline-flex items-center gap-1"
+                    >
+                      {idx > 0 && (
+                        <Link2 className="w-3 h-3 text-emerald-500 -mx-0.5" />
+                      )}
+                      <span className="inline-flex items-center gap-1 font-mono text-[10px] px-2.5 py-1 rounded-lg bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/35 shadow-2xs">
+                        <Wrench className="w-3 h-3" />
+                        {t}
+                      </span>
+                    </motion.div>
+                  ))}
+                </motion.div>
+              )}
+            </AnimatePresence>
 
+            {/* Chips de Prompts Rápidos con Físicas de Resorte */}
             <div className="flex flex-wrap gap-1.5">
               {QUICK_PROMPTS.map((q) => (
-                <button
+                <motion.button
                   key={q}
+                  layoutId={activePromptChip === q ? undefined : `prompt-${q}`}
                   type="button"
+                  whileHover={
+                    prefersReducedMotion ? undefined : { scale: 1.03, y: -1 }
+                  }
+                  whileTap={prefersReducedMotion ? undefined : { scale: 0.95 }}
+                  transition={{ type: 'spring', stiffness: 320, damping: 18 }}
                   disabled={chatSending}
                   onClick={() => handleEnviarPregunta(q)}
-                  className="text-[11px] font-semibold px-2.5 py-1 rounded-xl bg-slate-100 hover:bg-emerald-500/15 hover:text-emerald-700 dark:bg-slate-800/90 dark:hover:bg-emerald-500/20 dark:hover:text-emerald-300 text-slate-700 dark:text-slate-300 border border-slate-200/80 dark:border-slate-700/80 transition-all cursor-pointer disabled:opacity-50"
+                  className="text-[11px] font-semibold px-2.5 py-1 rounded-xl bg-slate-100 hover:bg-emerald-500/15 hover:text-emerald-700 dark:bg-slate-800/90 dark:hover:bg-emerald-500/20 dark:hover:text-emerald-300 text-slate-700 dark:text-slate-300 border border-slate-200/80 dark:border-slate-700/80 transition-colors cursor-pointer disabled:opacity-50"
                 >
                   {q}
-                </button>
+                </motion.button>
               ))}
             </div>
 
@@ -572,7 +862,11 @@ export default function PayersCommandCenterPage() {
                 className="p-1.5 rounded-xl border border-slate-200 dark:border-slate-800 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-500 dark:text-slate-400 cursor-pointer"
                 title="Sincronizar expediente en tiempo real"
               >
-                <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin text-emerald-500' : ''}`} />
+                <RefreshCw
+                  className={`w-3.5 h-3.5 ${
+                    loading ? 'animate-spin text-emerald-500' : ''
+                  }`}
+                />
               </button>
             </div>
 
@@ -594,7 +888,9 @@ export default function PayersCommandCenterPage() {
                     <div className="text-xs font-extrabold text-slate-900 dark:text-white truncate">
                       {fc.label}
                     </div>
-                    <div className="text-[10px] font-mono opacity-80 truncate">{fc.tag}</div>
+                    <div className="text-[10px] font-mono opacity-80 truncate">
+                      {fc.tag}
+                    </div>
                   </button>
                 );
               })}
@@ -628,8 +924,15 @@ export default function PayersCommandCenterPage() {
             </div>
           </div>
 
-          {/* ANILLO ANIMADO DE RECAUDACIÓN + DESGLOSE FINANCIERO */}
-          <div className="rounded-2xl border border-slate-200/80 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/60 p-4 space-y-3.5">
+          {/* ANILLO ANIMADO DE RECAUDACIÓN + DESGLOSE FINANCIERO (#seccion-pasarela) */}
+          <div
+            id="seccion-pasarela"
+            className={`rounded-2xl border p-4 space-y-3.5 transition-all duration-300 ${
+              activePipelineStage === 'PASARELA'
+                ? 'border-emerald-500 ring-2 ring-emerald-500/35 bg-emerald-500/5 dark:bg-emerald-950/30'
+                : 'border-slate-200/80 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/60'
+            }`}
+          >
             <div className="flex items-center gap-4">
               {/* Anillo SVG Animado */}
               <div className="relative w-20 h-20 shrink-0 flex items-center justify-center">
@@ -676,21 +979,36 @@ export default function PayersCommandCenterPage() {
                   </span>
                 </div>
                 <p className="text-xs text-slate-500 dark:text-slate-400 truncate">
-                  {orden?.servicio_nombre || vistaAnalitica?.servicio || 'Proyecto de Tesis'} · {universidadActual} ({carreraActual})
+                  {orden?.servicio_nombre ||
+                    vistaAnalitica?.servicio ||
+                    'Proyecto de Tesis'}{' '}
+                  · {universidadActual} ({carreraActual})
                 </p>
 
                 <div className="grid grid-cols-3 gap-2 pt-1 text-xs font-mono">
                   <div>
-                    <span className="text-[10px] text-slate-400 block font-sans">Total</span>
-                    <strong className="text-slate-900 dark:text-white">S/ {montoComprometido.toFixed(0)}</strong>
+                    <span className="text-[10px] text-slate-400 block font-sans">
+                      Total
+                    </span>
+                    <strong className="text-slate-900 dark:text-white">
+                      S/ {montoComprometido.toFixed(0)}
+                    </strong>
                   </div>
                   <div>
-                    <span className="text-[10px] text-emerald-500 block font-sans">Abonado</span>
-                    <strong className="text-emerald-600 dark:text-emerald-400">S/ {montoCobrado.toFixed(0)}</strong>
+                    <span className="text-[10px] text-emerald-500 block font-sans">
+                      Abonado
+                    </span>
+                    <strong className="text-emerald-600 dark:text-emerald-400">
+                      S/ {montoCobrado.toFixed(0)}
+                    </strong>
                   </div>
                   <div>
-                    <span className="text-[10px] text-amber-500 block font-sans">Pendiente</span>
-                    <strong className="text-amber-600 dark:text-amber-400">S/ {saldoPendiente.toFixed(0)}</strong>
+                    <span className="text-[10px] text-amber-500 block font-sans">
+                      Pendiente
+                    </span>
+                    <strong className="text-amber-600 dark:text-amber-400">
+                      S/ {saldoPendiente.toFixed(0)}
+                    </strong>
                   </div>
                 </div>
               </div>
@@ -729,8 +1047,15 @@ export default function PayersCommandCenterPage() {
             </div>
           </div>
 
-          {/* LÍNEA DE TIEMPO INTERACTIVA DE CUOTAS & CONTROL DE HITOS (OPCIÓN B) */}
-          <div className="space-y-2.5 flex-1">
+          {/* LÍNEA DE TIEMPO INTERACTIVA DE CUOTAS & CONTROL DE HITOS (OPCIÓN B) (#seccion-cronograma) */}
+          <div
+            id="seccion-cronograma"
+            className={`space-y-2.5 flex-1 rounded-2xl transition-all duration-300 ${
+              activePipelineStage === 'CRONOGRAMA'
+                ? 'p-2.5 ring-2 ring-emerald-500/35 bg-emerald-500/5'
+                : ''
+            }`}
+          >
             <div className="flex items-center justify-between">
               <span className="text-xs font-extrabold uppercase tracking-wider text-slate-700 dark:text-slate-300">
                 Línea de Tiempo de Cuotas ({cuotas.length})
@@ -742,7 +1067,11 @@ export default function PayersCommandCenterPage() {
                 className="inline-flex items-center gap-1 text-[11px] font-bold px-2.5 py-1 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 text-amber-700 dark:text-amber-300 border border-amber-500/30 transition-all cursor-pointer"
               >
                 <BellRing className="w-3 h-3" />
-                <span>{actionBusy === 'recordatorios' ? 'Barrido...' : 'Barrido Recordatorios'}</span>
+                <span>
+                  {actionBusy === 'recordatorios'
+                    ? 'Barrido...'
+                    : 'Barrido Recordatorios'}
+                </span>
               </button>
             </div>
 
@@ -751,15 +1080,19 @@ export default function PayersCommandCenterPage() {
                 const num = Number(c.numero_cuota);
                 const pagada = c.estado === 'PAGADA';
                 const esperaHito = c.estado === 'ESPERA_HITO';
+                const isHighlighted = activeCuotaHighlight === num;
                 return (
                   <div
                     key={c.cuota_id || num}
+                    onMouseEnter={() => setActiveCuotaHighlight(num)}
                     className={`rounded-2xl border p-3 flex items-center justify-between gap-3 transition-all ${
-                      pagada
-                        ? 'border-emerald-500/35 bg-emerald-500/5 dark:bg-emerald-950/20'
-                        : esperaHito
-                          ? 'border-slate-200/90 dark:border-slate-800 bg-white/70 dark:bg-slate-900/70'
-                          : 'border-sky-500/45 bg-sky-500/5 dark:bg-sky-950/25 shadow-xs'
+                      isHighlighted
+                        ? 'ring-2 ring-emerald-500/50 border-emerald-500 bg-emerald-500/10 dark:bg-emerald-950/35'
+                        : pagada
+                          ? 'border-emerald-500/35 bg-emerald-500/5 dark:bg-emerald-950/20'
+                          : esperaHito
+                            ? 'border-slate-200/90 dark:border-slate-800 bg-white/70 dark:bg-slate-900/70'
+                            : 'border-sky-500/45 bg-sky-500/5 dark:bg-sky-950/25 shadow-xs'
                     }`}
                   >
                     <div className="min-w-0 space-y-0.5">
@@ -797,7 +1130,9 @@ export default function PayersCommandCenterPage() {
                       <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
                         {c.condicion} · Vence:{' '}
                         {c.fecha_vencimiento
-                          ? new Date(c.fecha_vencimiento).toISOString().slice(0, 10)
+                          ? new Date(c.fecha_vencimiento)
+                              .toISOString()
+                              .slice(0, 10)
                           : 'Por hito académico'}
                       </p>
                     </div>

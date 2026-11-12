@@ -31,6 +31,10 @@ import {
   Activity,
 } from 'lucide-react';
 import { api } from '@/lib/api';
+import {
+  AcademicReactiveAssistant,
+  ThesisJourneyTrack,
+} from './ThesisInteractiveWidgets';
 
 type PayersTab = 'REPORTE_BI' | 'AGENTE_IA' | 'BANDEJA_ORDENES' | 'EVALUACION_AGENTE';
 
@@ -115,10 +119,12 @@ export default function PayersModule({ vista }: { vista: PayersVista }) {
   const [etlRunning, setEtlRunning] = useState<boolean>(false);
   const [statusBanner, setStatusBanner] = useState<string | null>(null);
 
-  // Estado Tab 2: Agente IA de Cobranza
-  const [selectedOrdenId, setSelectedOrdenId] = useState<number>(41); // Orden 41 pendiente por defecto para probar todo el flujo
+  // Estado Tab 2: Agente IA de Cobranza & Hitos de Tesis Interactivos
+  const [selectedOrdenId, setSelectedOrdenId] = useState<number>(42); // Orden 42 por defecto con 3 cuotas e hitos
   const [ordenDetalle, setOrdenDetalle] = useState<any>(null);
   const [loadingOrden, setLoadingOrden] = useState<boolean>(false);
+  const [actionBusy, setActionBusy] = useState<string | null>(null);
+  const [celebrateCounter, setCelebrateCounter] = useState<number>(0);
   const [chatInput, setChatInput] = useState<string>('');
   const [sendingChat, setSendingChat] = useState<boolean>(false);
   const [lastGuardrails, setLastGuardrails] = useState<string[]>([]);
@@ -213,6 +219,30 @@ export default function PayersModule({ vista }: { vista: PayersVista }) {
     await cargarOrdenDetalle(nuevoId);
   };
 
+  const handleToggleHito = async (numeroCuota: number, estadoActual: string) => {
+    setActionBusy(`cuota-${numeroCuota}`);
+    try {
+      if (estadoActual === 'ESPERA_HITO') {
+        await api.aprobarHitoCuota(selectedOrdenId, numeroCuota);
+        setCelebrateCounter((c) => c + 1);
+        setStatusBanner(
+          `✓ Hito académico validado: Cuota #${numeroCuota} habilitada a EXIGIBLE en orden #${selectedOrdenId}.`,
+        );
+      } else {
+        await api.revertirHitoCuota(selectedOrdenId, numeroCuota);
+        setStatusBanner(
+          `✓ Cuota #${numeroCuota} bloqueada en ESPERA_HITO hasta validación del asesor.`,
+        );
+      }
+      await cargarOrdenDetalle(selectedOrdenId);
+      await cargarOverview();
+    } catch (err: any) {
+      setStatusBanner(`Error actualizando hito: ${err?.message}`);
+    } finally {
+      setActionBusy(null);
+    }
+  };
+
   const handleSendChat = async (textoManual?: string) => {
     const msg = (textoManual ?? chatInput).trim();
     if (!msg || sendingChat) return;
@@ -236,6 +266,7 @@ export default function PayersModule({ vista }: { vista: PayersVista }) {
     setSimulatingWebhook(true);
     try {
       const res = await api.simularWebhookPayers(ordenId, medioPago);
+      setCelebrateCounter((c) => c + 1);
       setStatusBanner(`✓ ${res.mensaje}`);
       await cargarOrdenDetalle(ordenId);
       await cargarOverview();
@@ -250,6 +281,9 @@ export default function PayersModule({ vista }: { vista: PayersVista }) {
     setVerifyingVoucherId(voucherId);
     try {
       const res = await api.verificarVoucherPayers(voucherId, accion);
+      if (accion === 'APROBAR') {
+        setCelebrateCounter((c) => c + 1);
+      }
       setStatusBanner(`✓ ${res.mensaje}`);
       await cargarOverview();
       if (res.ordenPagoId === selectedOrdenId) {
@@ -358,6 +392,28 @@ export default function PayersModule({ vista }: { vista: PayersVista }) {
         </div>
 
         <div className="flex items-center gap-2.5 flex-wrap shrink-0">
+          <AcademicReactiveAssistant
+            isThinking={
+              sendingChat ||
+              etlRunning ||
+              runningEval ||
+              simulatingWebhook ||
+              loadingOrden
+            }
+            celebrateTrigger={celebrateCounter}
+            hasConfirmedPayment={
+              Number(ordenDetalle?.orden?.monto_cobrado || 0) > 0
+            }
+            studentName={
+              (
+                ordenDetalle?.orden?.estudiante_nombre ||
+                ordenDetalle?.vistaAnalitica?.estudiante ||
+                'Tesista'
+              ).split(' ')[0]
+            }
+            compact
+          />
+
           <button
             onClick={handleRunEtl}
             disabled={etlRunning}
@@ -798,6 +854,15 @@ export default function PayersModule({ vista }: { vista: PayersVista }) {
           ========================================================================= */}
       {activeTab === 'BANDEJA_ORDENES' && (
         <div className="space-y-6">
+          {/* Ruta Interactiva de Tesis ("Camino a la Sustentación") para la Orden Seleccionada */}
+          <ThesisJourneyTrack
+            cuotas={ordenDetalle?.cuotas || []}
+            ordenDetalle={ordenDetalle}
+            actionBusy={actionBusy}
+            onToggleHito={handleToggleHito}
+            onTriggerCelebration={() => setCelebrateCounter((c) => c + 1)}
+          />
+
           {/* Sección 2: Tabla Completa de las 104 Órdenes de Pago */}
           <div className="glass-panel p-5 rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 space-y-4">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
@@ -907,12 +972,25 @@ export default function PayersModule({ vista }: { vista: PayersVista }) {
                         </span>
                       </td>
                       <td className="py-2.5 px-3 text-center">
-                        <Link
-                          href={`/admin/payers/live-chat?orden=${o.id_orden_pago}`}
-                          className="px-2.5 py-1 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-[11px] font-bold cursor-pointer inline-block"
-                        >
-                          Abrir Chat
-                        </Link>
+                        <div className="flex items-center justify-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => handleSelectOrden(o.id_orden_pago)}
+                            className={`px-2.5 py-1 rounded-lg text-[11px] font-bold cursor-pointer transition-colors ${
+                              selectedOrdenId === o.id_orden_pago
+                                ? 'bg-emerald-600 text-white'
+                                : 'bg-slate-200 hover:bg-slate-300 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200'
+                            }`}
+                          >
+                            {selectedOrdenId === o.id_orden_pago ? 'Hitos Activos' : 'Ver Hitos'}
+                          </button>
+                          <Link
+                            href={`/admin/payers/live-chat?orden=${o.id_orden_pago}`}
+                            className="px-2.5 py-1 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-[11px] font-bold cursor-pointer inline-block"
+                          >
+                            Abrir Chat
+                          </Link>
+                        </div>
                       </td>
                     </tr>
                   ))}
