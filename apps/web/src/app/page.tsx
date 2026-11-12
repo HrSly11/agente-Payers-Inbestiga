@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import {
   Send,
@@ -16,14 +16,14 @@ import {
   Unlock,
   BellRing,
   Sparkles,
-  Copy,
-  Check,
   ExternalLink,
   RefreshCw,
   UserCheck,
   Terminal,
   ArrowRight,
   Wrench,
+  Search,
+  Users,
 } from 'lucide-react';
 import { api } from '@/lib/api';
 
@@ -35,6 +35,8 @@ const QUICK_PROMPTS = [
 ];
 
 export default function PayersCommandCenterPage() {
+  const [selectedOrdenId, setSelectedOrdenId] = useState<number>(42);
+  const [searchCliente, setSearchCliente] = useState<string>('');
   const [ordenDetalle, setOrdenDetalle] = useState<any | null>(null);
   const [overview, setOverview] = useState<any | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
@@ -50,48 +52,60 @@ export default function PayersCommandCenterPage() {
     herramientas: string[];
   } | null>(null);
 
-  // Copy helper for Mercado Pago Sandbox credentials
-  const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  const cargarOverview = useCallback(async () => {
+    const ov = await api.getPayersOverview().catch(() => null);
+    if (ov) setOverview(ov);
+  }, []);
 
-  const cargarDatos = useCallback(async () => {
+  const cargarOrdenSeleccionada = useCallback(async (id: number) => {
+    setLoading(true);
     try {
-      const [det, ov] = await Promise.all([
-        api.getPayerOrden(42).catch(() => null),
-        api.getPayersOverview().catch(() => null),
-      ]);
+      const det = await api.getPayerOrden(id).catch(() => null);
       if (det) setOrdenDetalle(det);
-      if (ov) setOverview(ov);
     } finally {
       setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    cargarDatos();
-  }, [cargarDatos]);
+    cargarOverview();
+  }, [cargarOverview]);
 
-  const copiarTexto = (key: string, value: string) => {
-    navigator.clipboard.writeText(value);
-    setCopiedKey(key);
-    setTimeout(() => setCopiedKey(null), 1800);
-  };
+  useEffect(() => {
+    cargarOrdenSeleccionada(selectedOrdenId);
+    setLastBotReply(null);
+    setActionBanner(null);
+  }, [selectedOrdenId, cargarOrdenSeleccionada]);
+
+  const ordenesLista: any[] = useMemo(() => {
+    const raw: any[] = overview?.ordenesDetalle || [];
+    if (!searchCliente.trim()) return raw;
+    const q = searchCliente.toLowerCase();
+    return raw.filter(
+      (o) =>
+        String(o.estudiante || '').toLowerCase().includes(q) ||
+        String(o.codigo_orden || '').toLowerCase().includes(q) ||
+        String(o.servicio || '').toLowerCase().includes(q) ||
+        String(o.universidad || '').toLowerCase().includes(q),
+    );
+  }, [overview, searchCliente]);
 
   const handleToggleHito = async (numeroCuota: number, estadoActual: string) => {
     setActionBusy(`cuota-${numeroCuota}`);
     setActionBanner(null);
     try {
       if (estadoActual === 'ESPERA_HITO') {
-        await api.aprobarHitoCuota(42, numeroCuota);
+        await api.aprobarHitoCuota(selectedOrdenId, numeroCuota);
         setActionBanner(
           `Cuota #${numeroCuota} habilitada a EXIGIBLE y notificada por Telegram (@inbestiga_tesis_bot).`,
         );
       } else {
-        await api.revertirHitoCuota(42, numeroCuota);
+        await api.revertirHitoCuota(selectedOrdenId, numeroCuota);
         setActionBanner(
           `Cuota #${numeroCuota} devuelta a ESPERA_HITO (Checkout Mercado Pago bloqueado hasta validación del asesor).`,
         );
       }
-      await cargarDatos();
+      await cargarOrdenSeleccionada(selectedOrdenId);
     } catch (err: any) {
       setActionBanner(`Error: ${err?.message || 'No se pudo actualizar el estado del hito'}`);
     } finally {
@@ -107,7 +121,7 @@ export default function PayersCommandCenterPage() {
       setActionBanner(
         `Motor Opción B ejecutado: ${res.recordatoriosEnviados ?? 0} recordatorio(s) a cuotas EXIGIBLE · ${res.escalamientosInternos ?? 0} alerta(s) internas por hito demorado.`,
       );
-      await cargarDatos();
+      await cargarOrdenSeleccionada(selectedOrdenId);
     } catch (err: any) {
       setActionBanner(`Error al ejecutar recordatorios: ${err?.message}`);
     } finally {
@@ -121,13 +135,13 @@ export default function PayersCommandCenterPage() {
     setChatSending(true);
     if (!texto) setChatInput('');
     try {
-      const res = await api.enviarMensajePayerAgent(42, msg);
+      const res = await api.enviarMensajePayerAgent(selectedOrdenId, msg);
       setLastBotReply({
         pregunta: msg,
         respuesta: res?.respuesta || 'Sin respuesta',
         herramientas: (res?.herramientasEjecutadas || []).map((h: any) => h.herramienta),
       });
-      await cargarDatos();
+      await cargarOrdenSeleccionada(selectedOrdenId);
     } catch (err: any) {
       setLastBotReply({
         pregunta: msg,
@@ -140,15 +154,23 @@ export default function PayersCommandCenterPage() {
   };
 
   const orden = ordenDetalle?.orden;
+  const vistaAnalitica = ordenDetalle?.vistaAnalitica;
   const cuotas: any[] = ordenDetalle?.cuotas || [];
   const kpis = overview?.kpis;
+
+  const nombreEstudiante =
+    orden?.estudiante_nombre || vistaAnalitica?.estudiante || 'Seleccionando cliente...';
+  const codigoOrdenActual =
+    orden?.codigo_orden || vistaAnalitica?.codigo_orden || `ORD-2026-${String(selectedOrdenId).padStart(4, '0')}`;
+  const universidadActual = vistaAnalitica?.universidad || 'Universidad';
+  const carreraActual = vistaAnalitica?.carrera || 'Investigación';
 
   return (
     <div className="space-y-8 pb-10">
       {/* HERO COMMAND CENTER — ASYMMETRIC 7/5 SPLIT */}
       <section className="relative rounded-3xl border border-slate-200/90 dark:border-slate-800/90 bg-gradient-to-br from-white via-slate-50/90 to-emerald-50/40 dark:from-slate-900/95 dark:via-slate-950 dark:to-emerald-950/25 p-6 sm:p-8 lg:p-10 shadow-xl overflow-hidden">
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
-          {/* LEFT COLUMN (7 COLS): VALUE PROPOSITION, PRIMARY CTAS & MERCADO PAGO CREDENTIALS */}
+          {/* LEFT COLUMN (7 COLS): VALUE PROPOSITION, PRIMARY CTAS & LIVE AGENT TESTER */}
           <div className="lg:col-span-7 space-y-6">
             <div className="inline-flex flex-wrap items-center gap-2 px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-700 dark:text-emerald-300 text-xs font-extrabold tracking-wide">
               <Sparkles className="w-3.5 h-3.5" />
@@ -165,13 +187,13 @@ export default function PayersCommandCenterPage() {
               </h1>
               <p className="text-sm sm:text-base text-slate-600 dark:text-slate-300 leading-relaxed max-w-2xl">
                 Ecosistema dedicado del módulo <strong>PAYERS v2.0</strong> de <strong>INBESTIGA</strong>.
-                Gestiona órdenes de pago transferidas desde LEADS, acredita abonos en tiempo real vía{' '}
+                Gestiona las órdenes de pago transferidas desde LEADS, acredita abonos en tiempo real vía{' '}
                 <strong>Mercado Pago Checkout Pro</strong>, asigna al asesor metodológico titular y
                 bloquea el cobro de cuotas futuras hasta que el asesor apruebe el entregable académico (<strong>Opción B</strong>).
               </p>
             </div>
 
-            {/* PRIMARY ACTION BAR: TELEGRAM + LIVE CHAT WEB + CHECKOUT MERCADO PAGO */}
+            {/* PRIMARY ACTION BAR: TELEGRAM + LIVE CHAT WEB + CHECKOUT MERCADO PAGO (DYNAMIC CLIENT) */}
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-1">
               <a
                 href="https://t.me/inbestiga_tesis_bot"
@@ -190,29 +212,31 @@ export default function PayersCommandCenterPage() {
               </a>
 
               <Link
-                href="/admin/payers/live-chat?orden=42"
+                href={`/admin/payers/live-chat?orden=${selectedOrdenId}`}
                 className="flex items-center justify-between gap-3 px-4 py-3.5 rounded-2xl bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold text-xs sm:text-sm shadow-lg shadow-emerald-600/20 transition-all group"
               >
                 <div className="flex items-center gap-2.5 min-w-0">
                   <MessageSquare className="w-4 h-4 shrink-0" />
                   <div className="text-left truncate">
                     <div className="leading-tight">Live Chat Web IA</div>
-                    <div className="text-[10px] font-medium text-emerald-100 truncate">Bidireccional en vivo</div>
+                    <div className="text-[10px] font-medium text-emerald-100 truncate">
+                      {nombreEstudiante} ({codigoOrdenActual})
+                    </div>
                   </div>
                 </div>
                 <ArrowRight className="w-4 h-4 shrink-0 opacity-80 group-hover:translate-x-0.5 transition-transform" />
               </Link>
 
               <Link
-                href="/checkout/ORD-2026-0042"
+                href={`/checkout/${codigoOrdenActual}`}
                 className="flex items-center justify-between gap-3 px-4 py-3.5 rounded-2xl bg-slate-900 hover:bg-slate-800 dark:bg-white dark:hover:bg-slate-100 text-white dark:text-slate-950 font-extrabold text-xs sm:text-sm shadow-lg transition-all group"
               >
                 <div className="flex items-center gap-2.5 min-w-0">
                   <CreditCard className="w-4 h-4 shrink-0 text-sky-400 dark:text-sky-600" />
                   <div className="text-left truncate">
-                    <div className="leading-tight">Checkout Oficial</div>
+                    <div className="leading-tight">Checkout Mercado Pago</div>
                     <div className="text-[10px] font-medium text-slate-300 dark:text-slate-600 truncate">
-                      Mercado Pago · ORD-2026-0042
+                      Pasarela · {codigoOrdenActual}
                     </div>
                   </div>
                 </div>
@@ -220,104 +244,18 @@ export default function PayersCommandCenterPage() {
               </Link>
             </div>
 
-            {/* MERCADO PAGO SANDBOX CREDENTIALS CARD (FOR DEMO PRESENTATION) */}
-            <div className="rounded-2xl border border-sky-200/80 dark:border-sky-500/25 bg-sky-50/70 dark:bg-sky-950/20 p-4 space-y-3">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="flex items-center gap-2">
-                  <CreditCard className="w-4 h-4 text-sky-600 dark:text-sky-400" />
-                  <span className="text-xs font-extrabold uppercase tracking-wider text-sky-900 dark:text-sky-300">
-                    Credenciales Oficiales de Prueba — Mercado Pago Checkout Pro (Perú · MPE)
-                  </span>
-                </div>
-                <span className="text-[11px] font-mono font-bold px-2 py-0.5 rounded bg-sky-500/15 text-sky-700 dark:text-sky-300">
-                  App ID: 1731534424959199
-                </span>
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 text-xs">
-                <div className="rounded-xl bg-white/90 dark:bg-slate-900/90 border border-slate-200 dark:border-slate-800 p-2.5 flex items-center justify-between gap-2">
-                  <div className="min-w-0">
-                    <div className="text-[10px] font-semibold text-slate-500 dark:text-slate-400">
-                      Comprador de Prueba (Usuario)
-                    </div>
-                    <div className="font-mono font-bold text-slate-900 dark:text-white truncate">
-                      TESTUSER2318102795638690646
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => copiarTexto('mp-user', 'TESTUSER2318102795638690646')}
-                    className="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-500 dark:text-slate-300 shrink-0"
-                    title="Copiar usuario comprador"
-                  >
-                    {copiedKey === 'mp-user' ? (
-                      <Check className="w-3.5 h-3.5 text-emerald-500" />
-                    ) : (
-                      <Copy className="w-3.5 h-3.5" />
-                    )}
-                  </button>
-                </div>
-
-                <div className="rounded-xl bg-white/90 dark:bg-slate-900/90 border border-slate-200 dark:border-slate-800 p-2.5 flex items-center justify-between gap-2">
-                  <div className="min-w-0">
-                    <div className="text-[10px] font-semibold text-slate-500 dark:text-slate-400">
-                      Contraseña Comprador
-                    </div>
-                    <div className="font-mono font-bold text-slate-900 dark:text-white truncate">
-                      VzZOEz7AAn
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => copiarTexto('mp-pass', 'VzZOEz7AAn')}
-                    className="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-500 dark:text-slate-300 shrink-0"
-                    title="Copiar contraseña"
-                  >
-                    {copiedKey === 'mp-pass' ? (
-                      <Check className="w-3.5 h-3.5 text-emerald-500" />
-                    ) : (
-                      <Copy className="w-3.5 h-3.5" />
-                    )}
-                  </button>
-                </div>
-
-                <div className="rounded-xl bg-white/90 dark:bg-slate-900/90 border border-slate-200 dark:border-slate-800 p-2.5 flex items-center justify-between gap-2">
-                  <div className="min-w-0">
-                    <div className="text-[10px] font-semibold text-slate-500 dark:text-slate-400">
-                      Código Verificación / User ID
-                    </div>
-                    <div className="font-mono font-bold text-slate-900 dark:text-white truncate">
-                      143111 · ID 3202143111
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => copiarTexto('mp-code', '143111')}
-                    className="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-500 dark:text-slate-300 shrink-0"
-                    title="Copiar código"
-                  >
-                    {copiedKey === 'mp-code' ? (
-                      <Check className="w-3.5 h-3.5 text-emerald-500" />
-                    ) : (
-                      <Copy className="w-3.5 h-3.5" />
-                    )}
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            {/* QUICK PROMPT TESTER DIRECTLY AGAINST THE PAYERS AGENT */}
+            {/* QUICK PROMPT TESTER DIRECTLY AGAINST THE PAYERS AGENT FOR ANY SELECTED CLIENT */}
             <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white/90 dark:bg-slate-900/90 p-4 space-y-3 shadow-sm">
               <div className="flex items-center justify-between gap-2">
-                <div className="flex items-center gap-2">
-                  <Terminal className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
-                  <span className="text-xs font-extrabold uppercase tracking-wider text-slate-800 dark:text-slate-200">
-                    Prueba Rápida del Agente IA PAYERS (Expediente #42 · Harry Sánchez)
+                <div className="flex items-center gap-2 min-w-0">
+                  <Terminal className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                  <span className="text-xs font-extrabold uppercase tracking-wider text-slate-800 dark:text-slate-200 truncate">
+                    Consulta en Vivo al Agente IA PAYERS ({nombreEstudiante} · {codigoOrdenActual})
                   </span>
                 </div>
                 <Link
-                  href="/admin/payers/live-chat?orden=42"
-                  className="text-[11px] font-bold text-emerald-600 dark:text-emerald-400 hover:underline"
+                  href={`/admin/payers/live-chat?orden=${selectedOrdenId}`}
+                  className="text-[11px] font-bold text-emerald-600 dark:text-emerald-400 hover:underline shrink-0"
                 >
                   Abrir consola completa →
                 </Link>
@@ -348,7 +286,7 @@ export default function PayersCommandCenterPage() {
                   type="text"
                   value={chatInput}
                   onChange={(e) => setChatInput(e.target.value)}
-                  placeholder="Escribe una consulta al Agente PAYERS (ej. ¿Cuál es mi siguiente cuota?)..."
+                  placeholder={`Escribe una consulta como ${nombreEstudiante}...`}
                   className="flex-1 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3.5 py-2 text-xs text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
                 />
                 <button
@@ -381,35 +319,70 @@ export default function PayersCommandCenterPage() {
             </div>
           </div>
 
-          {/* RIGHT COLUMN (5 COLS): LIVE EXPEDIENTE ORD-2026-0042 + OPTION B MILESTONE CONTROL */}
+          {/* RIGHT COLUMN (5 COLS): MULTI-CLIENT SELECTOR (104 ORDERS) + LIVE INSTALLMENTS & MILESTONES */}
           <div className="lg:col-span-5 rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900/95 p-5 shadow-lg space-y-4">
-            <div className="flex items-start justify-between gap-3 border-b border-slate-200 dark:border-slate-800 pb-3.5">
-              <div>
+            {/* MULTI-CLIENT SELECTOR HEADER */}
+            <div className="space-y-2.5 border-b border-slate-200 dark:border-slate-800 pb-3.5">
+              <div className="flex items-center justify-between gap-2">
                 <div className="flex items-center gap-2">
-                  <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" />
-                  <span className="text-[11px] font-extrabold uppercase tracking-wider text-emerald-600 dark:text-emerald-400">
-                    Expediente Activo en Vivo
+                  <Users className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+                  <span className="text-[11px] font-extrabold uppercase tracking-wider text-slate-600 dark:text-slate-300">
+                    Selector de Cliente / Expediente ({overview?.ordenesDetalle?.length || 104} Órdenes)
                   </span>
                 </div>
-                <h2 className="text-lg font-black text-slate-900 dark:text-white mt-0.5">
-                  {orden ? `${orden.nombres} ${orden.apellidos}` : 'Harry Sánchez'} ·{' '}
-                  <span className="font-mono text-emerald-600 dark:text-emerald-400">
-                    {orden?.codigo_orden || 'ORD-2026-0042'}
-                  </span>
-                </h2>
-                <p className="text-xs text-slate-500 dark:text-slate-400">
-                  {orden?.servicio_nombre || 'Proyecto de tesis'} · {orden?.universidad_siglas || 'UNT'} (
-                  {orden?.carrera_nombre || 'Ingeniería de Sistemas'})
-                </p>
+                <button
+                  type="button"
+                  onClick={() => cargarOrdenSeleccionada(selectedOrdenId)}
+                  className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-800 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-500 dark:text-slate-400"
+                  title="Refrescar expediente desde SQL Server"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+                </button>
               </div>
-              <button
-                type="button"
-                onClick={cargarDatos}
-                className="p-2 rounded-xl border border-slate-200 dark:border-slate-800 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-500 dark:text-slate-400"
-                title="Refrescar estado desde SQL Server"
-              >
-                <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
-              </button>
+
+              <div className="grid grid-cols-1 sm:grid-cols-12 gap-2">
+                <div className="sm:col-span-5 relative">
+                  <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="text"
+                    value={searchCliente}
+                    onChange={(e) => setSearchCliente(e.target.value)}
+                    placeholder="Filtrar cliente u orden..."
+                    className="w-full pl-8 pr-2.5 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 text-xs text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                  />
+                </div>
+                <div className="sm:col-span-7">
+                  <select
+                    value={selectedOrdenId}
+                    onChange={(e) => setSelectedOrdenId(Number(e.target.value))}
+                    className="w-full px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 text-xs font-bold text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                  >
+                    {ordenesLista.map((o: any) => (
+                      <option key={o.id_orden_pago} value={o.id_orden_pago}>
+                        {o.codigo_orden} — {o.estudiante} ({o.estado_orden})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div className="pt-1 flex items-center justify-between gap-2">
+                <div>
+                  <h2 className="text-base sm:text-lg font-black text-slate-900 dark:text-white">
+                    {nombreEstudiante} ·{' '}
+                    <span className="font-mono text-emerald-600 dark:text-emerald-400">
+                      {codigoOrdenActual}
+                    </span>
+                  </h2>
+                  <p className="text-xs text-slate-500 dark:text-slate-400">
+                    {orden?.servicio_nombre || vistaAnalitica?.servicio || 'Servicio Académico'} ·{' '}
+                    {universidadActual} ({carreraActual})
+                  </p>
+                </div>
+                <span className="text-[10px] font-mono font-extrabold px-2.5 py-1 rounded-full bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30">
+                  {orden?.estado || vistaAnalitica?.estado_orden || 'ACTIVO'}
+                </span>
+              </div>
             </div>
 
             {/* ADVISOR & FINANCIAL SUMMARY */}
@@ -417,7 +390,7 @@ export default function PayersCommandCenterPage() {
               <div className="rounded-xl bg-slate-50 dark:bg-slate-950/80 border border-slate-200/80 dark:border-slate-800 p-2.5">
                 <div className="text-[10px] font-semibold uppercase text-slate-500">Comprometido</div>
                 <div className="text-sm font-black font-mono text-slate-900 dark:text-white">
-                  S/ {Number(orden?.monto_comprometido ?? 1620).toFixed(2)}
+                  S/ {Number(orden?.monto_comprometido ?? 0).toFixed(2)}
                 </div>
               </div>
               <div className="rounded-xl bg-emerald-50/70 dark:bg-emerald-950/30 border border-emerald-500/30 p-2.5">
@@ -425,18 +398,18 @@ export default function PayersCommandCenterPage() {
                   Abonado (MP)
                 </div>
                 <div className="text-sm font-black font-mono text-emerald-700 dark:text-emerald-400">
-                  S/ {Number(orden?.monto_cobrado ?? 486).toFixed(2)}
+                  S/ {Number(orden?.monto_cobrado ?? 0).toFixed(2)}
                 </div>
               </div>
               <div className="rounded-xl bg-amber-50/70 dark:bg-amber-950/30 border border-amber-500/30 p-2.5">
                 <div className="text-[10px] font-semibold uppercase text-amber-700 dark:text-amber-300">
-                  Saldo por Hitos
+                  Saldo Pendiente
                 </div>
                 <div className="text-sm font-black font-mono text-amber-700 dark:text-amber-400">
                   S/{' '}
                   {Math.max(
                     0,
-                    Number(orden?.monto_comprometido ?? 1620) - Number(orden?.monto_cobrado ?? 486),
+                    Number(orden?.monto_comprometido ?? 0) - Number(orden?.monto_cobrado ?? 0),
                   ).toFixed(2)}
                 </div>
               </div>
@@ -464,7 +437,7 @@ export default function PayersCommandCenterPage() {
             <div className="space-y-2">
               <div className="flex items-center justify-between">
                 <span className="text-xs font-extrabold uppercase tracking-wider text-slate-700 dark:text-slate-300">
-                  Cronograma de Cuotas & Control de Hitos (Opción B)
+                  Cronograma de Cuotas & Control de Hitos ({cuotas.length})
                 </span>
                 <button
                   type="button"
@@ -473,11 +446,11 @@ export default function PayersCommandCenterPage() {
                   className="inline-flex items-center gap-1 text-[11px] font-bold px-2.5 py-1 rounded-lg bg-amber-500/15 hover:bg-amber-500/25 text-amber-700 dark:text-amber-300 border border-amber-500/30 transition-colors cursor-pointer"
                 >
                   <BellRing className="w-3 h-3" />
-                  <span>{actionBusy === 'recordatorios' ? 'Ejecutando...' : 'Probar Recordatorios'}</span>
+                  <span>{actionBusy === 'recordatorios' ? 'Ejecutando...' : 'Ejecutar Recordatorios'}</span>
                 </button>
               </div>
 
-              <div className="space-y-2">
+              <div className="space-y-2 max-h-[260px] overflow-y-auto pr-1">
                 {cuotas.map((c: any) => {
                   const num = Number(c.numero_cuota);
                   const pagada = c.estado === 'PAGADA';
@@ -640,7 +613,7 @@ export default function PayersCommandCenterPage() {
       {/* BENTO NAVIGATION TO SPECIALIZED MODULES */}
       <section className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         <Link
-          href="/admin/payers/live-chat?orden=42"
+          href={`/admin/payers/live-chat?orden=${selectedOrdenId}`}
           className="group rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900/90 p-5 hover:border-emerald-500/60 transition-all shadow-sm flex flex-col justify-between"
         >
           <div className="space-y-2.5">
@@ -652,11 +625,11 @@ export default function PayersCommandCenterPage() {
             </h3>
             <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed">
               Conversa en tiempo real con el Agente IA desde la web o sincronizado con Telegram (
-              <code>@inbestiga_tesis_bot</code>), inspecciona herramientas ejecutadas y aprueba hitos.
+              <code>@inbestiga_tesis_bot</code>) para cualquiera de los 104 expedientes.
             </p>
           </div>
           <div className="pt-4 flex items-center gap-1 text-xs font-extrabold text-emerald-600 dark:text-emerald-400">
-            <span>Abrir Live Chat</span>
+            <span>Abrir Live Chat ({codigoOrdenActual})</span>
             <ArrowRight className="w-3.5 h-3.5 group-hover:translate-x-1 transition-transform" />
           </div>
         </Link>

@@ -44,20 +44,14 @@ export default function Navbar() {
       badge: 'VIVO',
       accent: 'emerald',
     },
-    {
-      href: '/checkout/ORD-2026-0042',
-      label: 'Checkout MP',
-      icon: CreditCard,
-      accent: 'sky',
-    },
-    { href: '/admin/payers', label: 'Órdenes (104)', icon: Layers },
+    { href: '/admin/payers', label: 'Órdenes & Pasarela', icon: Layers, accent: 'sky' },
     {
       href: '/admin/customers',
       label: 'Hitos & Asesor',
       icon: BookOpen,
       accent: 'amber',
     },
-    { href: '/admin/payers/reporte', label: 'Reporte BI', icon: BarChart3 },
+    { href: '/admin/payers/reporte', label: 'Reporte BI R-PAYERS', icon: BarChart3 },
     { href: '/admin/payers/evaluacion', label: 'Evaluación (40)', icon: ShieldCheck },
     { href: '/admin/comprobantes', label: 'Comprobantes', icon: Receipt },
   ];
