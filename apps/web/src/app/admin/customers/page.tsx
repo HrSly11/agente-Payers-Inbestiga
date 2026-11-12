@@ -205,7 +205,7 @@ export default function CustomersPage() {
               <span className="p-2 rounded-xl bg-purple-100 dark:bg-purple-900/50 text-purple-700 dark:text-purple-400 shadow-sm">
                 <BookOpen className="w-5 h-5" />
               </span>
-              <span>Bitácora de Tesistas & Trazabilidad de Investigación</span>
+              <span>Hitos & Asesor — Bitácora y Habilitación de Cuotas</span>
             </h1>
             <span className="text-xs bg-purple-100 text-purple-800 dark:bg-purple-900/40 dark:text-purple-300 px-2.5 py-0.5 rounded-full border border-purple-200 dark:border-purple-800/50 font-bold">
               Etapa: CUSTOMERS Activos

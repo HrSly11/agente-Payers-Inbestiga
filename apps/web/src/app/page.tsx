@@ -429,7 +429,7 @@ export default function PayersCommandCenterPage() {
                 href="/admin/customers"
                 className="text-[11px] font-bold text-emerald-600 dark:text-emerald-400 hover:underline shrink-0"
               >
-                Bitácora →
+                Hitos & Asesor →
               </Link>
             </div>
 

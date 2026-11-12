@@ -149,13 +149,13 @@ export default function ComprobantesPage() {
         <div>
           <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-blue-100 dark:bg-blue-500/10 text-blue-800 dark:text-sky-300 text-xs font-bold border border-blue-200 dark:border-blue-500/20 mb-2">
             <Receipt className="w-3.5 h-3.5" />
-            <span>Facturación Electrónica & Pasarela Culqi</span>
+            <span>Facturación Electrónica & Pasarela Mercado Pago</span>
           </div>
           <h1 className="font-heading text-2xl sm:text-3xl font-black text-slate-900 dark:text-white">
             Panel de Comprobantes de Pago
           </h1>
           <p className="text-slate-600 dark:text-slate-400 text-xs sm:text-sm mt-1">
-            Auditoría de boletas de venta electrónicas de tesistas, trazabilidad de transacciones Culqi Express y descarga oficial en PDF.
+            Auditoría de boletas de venta electrónicas de tesistas, trazabilidad de transacciones Mercado Pago Checkout Pro y descarga oficial en PDF.
           </p>
         </div>
 
@@ -165,7 +165,7 @@ export default function ComprobantesPage() {
               <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
               <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
             </span>
-            <span>Webhook Culqi Automático (200 OK)</span>
+            <span>Webhook Mercado Pago Activo (200 OK)</span>
           </div>
 
           <button
@@ -181,7 +181,7 @@ export default function ComprobantesPage() {
             href="/admin/customers"
             className="px-3.5 py-2 rounded-xl text-xs font-bold bg-purple-100 hover:bg-purple-200 dark:bg-purple-950/60 dark:hover:bg-purple-900/80 text-purple-800 dark:text-purple-300 transition-colors flex items-center gap-1.5"
           >
-            <span>Ir a Bitácora Tesistas</span>
+            <span>Ir a Hitos & Asesor</span>
             <ChevronRight className="w-3.5 h-3.5" />
           </Link>
         </div>
@@ -221,7 +221,7 @@ export default function ComprobantesPage() {
             <h3 className="font-heading text-2xl font-black text-amber-600 dark:text-amber-400 mt-0.5">
               {pendientesCount}
             </h3>
-            <p className="text-[10px] text-amber-600 font-medium mt-0.5">Esperando confirmación Culqi</p>
+            <p className="text-[10px] text-amber-600 font-medium mt-0.5">Esperando confirmación Mercado Pago</p>
           </div>
           <div className="w-11 h-11 rounded-2xl bg-amber-100 dark:bg-amber-500/20 text-amber-600 flex items-center justify-center shrink-0">
             <Clock className="w-5 h-5" />
@@ -232,9 +232,9 @@ export default function ComprobantesPage() {
           <div>
             <p className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Pasarela Oficial</p>
             <h3 className="font-heading text-lg font-black text-purple-700 dark:text-purple-300 mt-0.5 flex items-center gap-1.5">
-              <span>CULQI EXPRESS</span>
+              <span>MERCADO PAGO</span>
             </h3>
-            <p className="text-[10px] text-slate-400 mt-0.5">Yape + Tarjetas (Credicorp)</p>
+            <p className="text-[10px] text-slate-400 mt-0.5">Checkout Pro · Tarjetas & Yape</p>
           </div>
           <div className="w-11 h-11 rounded-2xl bg-purple-100 dark:bg-purple-500/20 text-purple-600 flex items-center justify-center shrink-0">
             <ShieldCheck className="w-5 h-5" />
@@ -248,7 +248,7 @@ export default function ComprobantesPage() {
           <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
           <input
             type="text"
-            placeholder="Buscar por tesista, WhatsApp o ID Culqi..."
+            placeholder="Buscar por tesista, orden o ID Mercado Pago..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             className="w-full pl-9 pr-4 py-2 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
@@ -277,7 +277,7 @@ export default function ComprobantesPage() {
             className="px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 text-xs font-semibold text-slate-700 dark:text-slate-300 focus:outline-none"
           >
             <option value="TODOS">Todos los Métodos</option>
-            <option value="YAPE">Yape (Culqi)</option>
+            <option value="YAPE">Yape / Plin</option>
             <option value="CARD">Tarjetas de Débito/Crédito</option>
             <option value="TRANSFER">Transferencia Directa</option>
           </select>
@@ -430,7 +430,7 @@ export default function ComprobantesPage() {
                           {p.estado === 'PENDIENTE' && (
                             <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl text-[10px] font-bold text-amber-800 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800" title="La confirmación es 100% automática por Webhook de Culqi en cuanto el tesista yapee o pague">
                               <Clock className="w-3 h-3 text-amber-600 animate-spin" />
-                              <span>Esperando Pago Culqi (Automático)</span>
+                              <span>Esperando Pago Mercado Pago</span>
                             </div>
                           )}
                           {p.estado === 'EXPIRADO' && (
@@ -734,10 +734,10 @@ export default function ComprobantesPage() {
                     <div className="space-y-1">
                       <div className="flex items-center gap-1.5 font-bold text-purple-900">
                         <ShieldCheck className="w-4 h-4 text-emerald-600" />
-                        <span>Validación en Pasarela de Pagos Culqi Express</span>
+                        <span>Validación en Pasarela Oficial Mercado Pago Checkout Pro</span>
                       </div>
                       <p className="text-[10px] text-slate-600">
-                        Transacción Culqi ID: <span className="font-mono font-bold text-purple-800">{comprobanteData.pasarela.transaccionId}</span>
+                        Transacción Mercado Pago ID: <span className="font-mono font-bold text-purple-800">{comprobanteData.pasarela.transaccionId}</span>
                       </p>
                       <p className="text-[10px] text-slate-600">
                         Medio de pago: <strong className="uppercase">{comprobanteData.pasarela.metodo}</strong> • Estado: <strong className="text-emerald-700">PAGO ACREDITADO (200 OK)</strong>
@@ -747,7 +747,7 @@ export default function ComprobantesPage() {
                     {/* QR Code Demo SVG */}
                     <div className="flex items-center gap-2 bg-white p-2 rounded-lg border border-purple-200 shrink-0">
                       <div className="w-12 h-12 bg-slate-900 text-white rounded flex items-center justify-center font-mono text-[9px] text-center leading-tight">
-                        QR CULQI
+                        QR MP
                       </div>
                       <div className="text-[9px] text-slate-500 leading-tight">
                         <p className="font-bold text-slate-700">Verificación Digital</p>
