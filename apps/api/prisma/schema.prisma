@@ -1,5 +1,5 @@
 datasource db {
-  provider = "sqlserver"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 
@@ -153,7 +153,7 @@ model Formulario {
   id         String   @id @default(uuid())
   buyerId    String
   buyer      Buyer    @relation(fields: [buyerId], references: [id], onDelete: Cascade)
-  datosJson  String   @db.NVarChar(Max)
+  datosJson  String
   ip         String?
   userAgent  String?
   fechaEnvio DateTime @default(now())
@@ -166,7 +166,7 @@ model Interaccion {
   buyerId   String
   buyer     Buyer    @relation(fields: [buyerId], references: [id], onDelete: Cascade)
   tipo      String   // VISITA, DESCARGA_LEAD_MAGNET, CLIC_ANUNCIO, ENVIO_FORMULARIO, MENSAJE_WHATSAPP
-  detalle   String?  @db.NVarChar(Max)
+  detalle   String?
   fechaHora DateTime @default(now())
 
   @@map("INTERACCION")
@@ -180,7 +180,7 @@ model Lead {
   prioridad           String         @default("MEDIA") // ALTA, MEDIA, BAJA (Sección 4.3 del informe)
   fechaCalificacion   DateTime       @default(now())
   umbralSuperado      Boolean        @default(true)
-  criterioCalificacion String?       @db.NVarChar(Max) // Desglose JSON del score
+  criterioCalificacion String?       // Desglose JSON del score
 
   conversaciones      Conversacion[]
   diagnosticos        Diagnostico[]
@@ -202,7 +202,7 @@ model Servicio {
   id                String            @id @default(uuid())
   nombre            String
   codigo            String            @unique // TESIS_INTEGRAL, PLAN_TESIS, ANALISIS_ESTADISTICO, ARTICULO
-  descripcion       String            @db.NVarChar(Max)
+  descripcion       String
   tipoInvestigacion String            // TESIS, PLAN_DE_TESIS, ARTICULO_CIENTIFICO
   precioBase        Decimal           @db.Decimal(10, 2)
   precioMinimo      Decimal           @db.Decimal(10, 2)
@@ -229,7 +229,7 @@ model ReglaComercial {
   cuotaMinima           Decimal   @default(200.00) @db.Decimal(10, 2)
   plazoMinimoDias       Int       @default(15)
   plazoMaximoDias       Int       @default(120)
-  condicionesEspeciales String?   @db.NVarChar(Max)
+  condicionesEspeciales String?
   activo                Boolean   @default(true)
 
   @@map("REGLA_COMERCIAL")
@@ -246,7 +246,7 @@ model PerfilNegociacion {
   urgenciaNivel           String?  // ALTA, MEDIA, BAJA
   objecionPredominante    String?  // PRECIO, TIEMPO, CONFIANZA
   scoreSensibilidadPrecio Int?     @default(50) // 0-100
-  notas                   String?  @db.NVarChar(Max)
+  notas                   String?
 
   @@map("PERFIL_NEGOCIACION")
 }
@@ -277,12 +277,12 @@ model Mensaje {
   conversacion   Conversacion @relation(fields: [conversacionId], references: [id], onDelete: Cascade)
   direccion      String       // INCOMING (Cliente->Bot), OUTGOING (Bot->Cliente)
   remitente      String       // CLIENTE, AGENTE_IA, ASESOR_HUMANO
-  contenido      String       @db.NVarChar(Max)
+  contenido      String
   tipoMensaje    String       @default("TEXT") // TEXT, PAYMENT_LINK, QUOTE, DOCUMENT
   fechaHora      DateTime     @default(now())
   estadoEntrega  String       @default("SENT") // SENT, DELIVERED, READ, FAILED
   respuestaA     String?
-  metadata       String?      @db.NVarChar(Max) // JSON de tools invocadas, etc.
+  metadata       String?      // JSON de tools invocadas, etc.
 
   @@map("MENSAJE")
 }
@@ -295,8 +295,8 @@ model Diagnostico {
   lead                  Lead?        @relation(fields: [leadId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   temaInvestigacion     String?
   avanceActualPct       Int          @default(0) // 0-100%
-  principalesDificultades String?    @db.NVarChar(Max)
-  resumenIA             String?      @db.NVarChar(Max)
+  principalesDificultades String?
+  resumenIA             String?
   fechaDiagnostico      DateTime     @default(now())
 
   @@map("DIAGNOSTICO")
@@ -316,7 +316,7 @@ model Propuesta {
   numeroCuotas         Int           @default(1)
   montoPorCuota        Decimal       @db.Decimal(10, 2)
   plazoDias            Int           @default(30)
-  justificacion        String?       @db.NVarChar(Max)
+  justificacion        String?
   estado               String        @default("BORRADOR") // BORRADOR, ENVIADA, ACEPTADA, RECHAZADA
   fechaCreacion        DateTime      @default(now())
   cotizaciones         Cotizacion[]
@@ -331,8 +331,8 @@ model Objecion {
   leadId         String?
   lead           Lead?        @relation(fields: [leadId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   tipo           String       // PRECIO, TIEMPO, CONFIANZA, COMPARACION, METODO_PAGO, OTRO
-  descripcion    String       @db.NVarChar(Max)
-  respuestaAgente String?     @db.NVarChar(Max)
+  descripcion    String
+  respuestaAgente String?
   resuelta       Boolean      @default(false)
   fechaRegistro  DateTime     @default(now())
 
@@ -397,7 +397,7 @@ model Pago {
   estado               String      @default("PENDIENTE") // PENDIENTE, CONFIRMADO, FALLIDO, REEMBOLSADO
   fechaCreacion        DateTime    @default(now())
   fechaConfirmacion    DateTime?
-  gatewayPayload       String?     @db.NVarChar(Max)
+  gatewayPayload       String?
   comprobanteUrl       String?
 
   payer                Payer[]
@@ -461,7 +461,7 @@ model Customer {
   asesor              Asesor?            @relation(fields: [asesorId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   fechaInicioServicio DateTime           @default(now())
   estadoServicio      String             @default("ACTIVO") // ACTIVO, EN_CURSO, FINALIZADO, PAUSADO
-  observaciones       String?            @db.NVarChar(Max)
+  observaciones       String?
 
   asignaciones        AsignacionAsesor[]
   sesiones            Sesion[]
@@ -495,7 +495,7 @@ model Sesion {
   temaTratado         String
   estado              String    @default("PROGRAMADA") // PROGRAMADA, REALIZADA, REPROGRAMADA, CANCELADA
   enlaceReunion       String?
-  observaciones       String?   @db.NVarChar(Max)
+  observaciones       String?
 
   @@map("SESION")
 }
@@ -509,10 +509,10 @@ model Notificacion {
   usuario       Usuario?  @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
   tipo          String    // LEAD_CALIFICADO, NEGOCIACION_INICIADA, PAGO_CONFIRMADO, SESION_PROGRAMADA, ESCALACION_HUMANA
   titulo        String
-  mensaje       String    @db.NVarChar(Max)
+  mensaje       String
   leido         Boolean   @default(false)
   fechaCreacion DateTime  @default(now())
-  metadata      String?   @db.NVarChar(Max)
+  metadata      String?
 
   @@map("NOTIFICACION")
 }
@@ -521,13 +521,13 @@ model ConfiguracionAgente {
   id                       String   @id @default(uuid())
   proveedorIA              String   @default("GEMINI") // GEMINI, GROK
   modelo                   String   @default("gemini-1.5-flash")
-  promptSistema            String   @db.NVarChar(Max)
+  promptSistema            String
   tono                     String   @default("Profesional, empático, académico y resolutivo")
   estilo                   String   @default("Consultor experto en investigación universitaria")
   permitirNegociacion      Boolean  @default(true)
   maxDescuentoNegociablePct Decimal @default(15.00) @db.Decimal(5, 2)
   maxCuotasNegociables     Int      @default(3)
-  reglasObjecionesJson     String?  @db.NVarChar(Max)
+  reglasObjecionesJson     String?
   horarioInicio            String   @default("08:00")
   horarioFin               String   @default("22:00")
   activo                   Boolean  @default(true)
