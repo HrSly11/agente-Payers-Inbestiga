@@ -1,0 +1,135 @@
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;0,800;1,400&family=Outfit:wght@400;500;600;700;800;900&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --font-sans: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+    --font-heading: 'Outfit', 'Plus Jakarta Sans', sans-serif;
+  }
+
+  /* Modo Claro por Defecto (cuando no tiene .dark) */
+  html:not(.dark) {
+    color-scheme: light;
+  }
+
+  html:not(.dark) body {
+    background-color: #f8fafc;
+    color: #0f172a;
+    font-family: var(--font-sans);
+  }
+
+  /* Modo Oscuro */
+  html.dark {
+    color-scheme: dark;
+  }
+
+  html.dark body {
+    background-color: #080c16;
+    color: #f1f5f9;
+    font-family: var(--font-sans);
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    font-family: var(--font-heading);
+    letter-spacing: -0.025em;
+  }
+}
+
+/* ==========================================================================
+   PANELES EJECUTIVOS & ADAPTABILIDAD CLARO / OSCURO
+   ========================================================================== */
+
+/* Modo Oscuro: Glassmorphism Nocturno con Azul Oxford y Pizarra */
+html.dark .glass-panel {
+  background: rgba(15, 23, 42, 0.78);
+  backdrop-filter: blur(14px);
+  border: 1px solid rgba(51, 65, 85, 0.45);
+  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.36);
+  color: #f8fafc;
+}
+
+html.dark .glass-card {
+  background: rgba(26, 36, 56, 0.55);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(71, 85, 105, 0.35);
+  color: #f1f5f9;
+}
+
+html.dark .table-row-hover:hover {
+  background-color: rgba(30, 41, 59, 0.5);
+}
+
+/* Modo Claro: Panel Ejecutivo Marfil / Porcelana con sombras suaves */
+html:not(.dark) .glass-panel {
+  background: rgba(255, 255, 255, 0.92);
+  backdrop-filter: blur(14px);
+  border: 1px solid #e2e8f0;
+  box-shadow: 0 4px 20px -2px rgba(15, 23, 42, 0.07), 0 2px 6px -1px rgba(15, 23, 42, 0.04);
+  color: #0f172a;
+}
+
+html:not(.dark) .glass-card {
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  box-shadow: 0 1px 3px 0 rgba(15, 23, 42, 0.05);
+  color: #1e293b;
+}
+
+html:not(.dark) .table-row-hover:hover {
+  background-color: #f1f5f9;
+}
+
+/* Contenedor con borde degradado académico */
+.gradient-border {
+  position: relative;
+  border-radius: 0.75rem;
+  background: linear-gradient(135deg, rgba(30, 64, 175, 0.2), rgba(2, 132, 199, 0.08));
+  border: 1px solid rgba(2, 132, 199, 0.3);
+}
+
+/* ==========================================================================
+   PROTECCIÓN DE DESBORDES DE TEXTO & TIPOGRAFÍA PROFESIONAL
+   ========================================================================== */
+.text-balance-safe {
+  text-wrap: balance;
+}
+
+.break-word-safe {
+  overflow-wrap: anywhere;
+  word-break: normal;
+  word-wrap: break-word;
+}
+
+/* Tablas responsive con scroll suave */
+.table-responsive-wrapper {
+  width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Scrollbars Ejecutivos */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+html.dark ::-webkit-scrollbar-track {
+  background: #080c16;
+}
+
+html.dark ::-webkit-scrollbar-thumb {
+  background: #334155;
+  border-radius: 9999px;
+}
+
+html:not(.dark) ::-webkit-scrollbar-track {
+  background: #f1f5f9;
+}
+
+html:not(.dark) ::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 9999px;
+}

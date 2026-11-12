@@ -1,0 +1,21 @@
+{
+  "name": "inbestiga-tesis",
+  "version": "1.0.0",
+  "private": true,
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces",
+    "dev:api": "npm run start:dev --workspace=apps/api",
+    "dev:web": "npm run dev --workspace=apps/web",
+    "prisma:generate": "npm run prisma:generate --workspace=apps/api",
+    "prisma:push": "npm run prisma:push --workspace=apps/api",
+    "prisma:seed": "npm run prisma:seed --workspace=apps/api",
+    "db:up": "docker compose -f infrastructure/docker/docker-compose.yml up -d"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.5"
+  }
+}

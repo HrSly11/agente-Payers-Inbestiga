@@ -1,0 +1,536 @@
+datasource db {
+  provider = "sqlserver"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// -----------------------------------------------------------------------------
+// Seguridad y Usuarios
+// -----------------------------------------------------------------------------
+model Usuario {
+  id            String         @id @default(uuid())
+  username      String         @unique
+  email         String         @unique
+  passwordHash  String
+  rol           String         @default("ADMIN") // ADMIN, ASESOR
+  activo        Boolean        @default(true)
+  fechaCreacion DateTime       @default(now())
+  notificaciones Notificacion[]
+
+  @@map("USUARIO")
+}
+
+// -----------------------------------------------------------------------------
+// Catálogos Académicos y Geográficos
+// -----------------------------------------------------------------------------
+model Universidad {
+  id        String    @id @default(uuid())
+  nombre    String
+  siglas    String    @unique
+  ciudad    String
+  tipo      String    // PUBLICA, PRIVADA
+  activo    Boolean   @default(true)
+  carreras  Carrera[]
+  buyers    Buyer[]
+
+  @@map("UNIVERSIDAD")
+}
+
+model Carrera {
+  id               String       @id @default(uuid())
+  universidadId    String
+  universidad      Universidad  @relation(fields: [universidadId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  nombre           String
+  facultad         String
+  areaConocimiento String       // INGENIERIA, CIENCIAS_SALUD, SOCIALES, NEGOCIOS, DERECHO
+  activo           Boolean      @default(true)
+  buyers           Buyer[]
+
+  @@map("CARRERA")
+}
+
+model Ubicacion {
+  id           String   @id @default(uuid())
+  departamento String
+  provincia    String
+  distrito     String
+  buyers       Buyer[]
+
+  @@map("UBICACION")
+}
+
+// -----------------------------------------------------------------------------
+// Marketing y Captación (UNIVERSO -> BUYER)
+// -----------------------------------------------------------------------------
+model Canal {
+  id          String    @id @default(uuid())
+  nombre      String
+  codigo      String    @unique // ORGANICO, META_ADS, TIKTOK, GOOGLE, REFERIDO
+  tipo        String
+  descripcion String?
+  campanas    Campana[]
+  buyers      Buyer[]
+
+  @@map("CANAL")
+}
+
+model Campana {
+  id          String      @id @default(uuid())
+  canalId     String
+  canal       Canal       @relation(fields: [canalId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  nombre      String
+  presupuesto Decimal     @default(0) @db.Decimal(10, 2)
+  fechaInicio DateTime
+  fechaFin    DateTime?
+  activo      Boolean     @default(true)
+  contenidos  Contenido[]
+  buyers      Buyer[]
+
+  @@map("CAMPAÑA")
+}
+
+model Contenido {
+  id         String   @id @default(uuid())
+  campanaId  String
+  campana    Campana  @relation(fields: [campanaId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  titulo     String
+  tipo       String   // VIDEO, POST, LANDING, GUIA_PDF
+  url        String?
+  leadMagnet Boolean  @default(false)
+  activo     Boolean  @default(true)
+
+  @@map("CONTENIDO")
+}
+
+// -----------------------------------------------------------------------------
+// Funnel IMPULSE: BUYER y LEAD
+// -----------------------------------------------------------------------------
+model Buyer {
+  id                    String        @id @default(uuid())
+  nombres               String
+  apellidos             String
+  whatsapp              String
+  email                 String
+  universidadId         String?
+  universidad           Universidad?  @relation(fields: [universidadId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  carreraId             String?
+  carrera               Carrera?      @relation(fields: [carreraId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  ubicacionId           String?
+  ubicacion             Ubicacion?    @relation(fields: [ubicacionId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  canalId               String?
+  canal                 Canal?        @relation(fields: [canalId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  campanaId             String?
+  campana               Campana?      @relation(fields: [campanaId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  ciclo                 String?       // 8vo, 9no, 10mo, EGRESADO, BACHILLER, MAESTRIA
+  tipoInvestigacion     String?       // TESIS, PLAN_DE_TESIS, ARTICULO_CIENTIFICO, TESINA
+  situacionLaboral      String?       // TRABAJA_TIEMPO_COMPLETO, MEDIO_TIEMPO, SOLO_ESTUDIA
+  presupuestoAprox      Decimal?      @db.Decimal(10, 2)
+  dolorPrincipal        String?       // METODOLOGIA, ESTADISTICA, ASESOR_NO_RESPONDE, FALTA_TIEMPO
+  softwareRequerido     String?       // SPSS, R, PYTHON, ATLAS_TI, STATA
+  plazoDefinidoDias     Int?          // Plazo en días deseado por el estudiante
+  leadScore             Int           @default(0)
+  estadoFunnel          String        @default("BUYER") // BUYER, LEAD, PAYER, CUSTOMER
+  consentimientoWhatsapp Boolean       @default(true)
+  fechaRegistro         DateTime      @default(now())
+  fechaConversionLead   DateTime?
+
+  formularios           Formulario[]
+  interacciones         Interaccion[]
+  lead                  Lead?
+  conversaciones        Conversacion[]
+  perfilNegociacion     PerfilNegociacion?
+  pagos                 Pago[]
+  payer                 Payer?
+  customer              Customer?
+
+  @@map("BUYER")
+}
+
+model Formulario {
+  id         String   @id @default(uuid())
+  buyerId    String
+  buyer      Buyer    @relation(fields: [buyerId], references: [id], onDelete: Cascade)
+  datosJson  String   @db.NVarChar(Max)
+  ip         String?
+  userAgent  String?
+  fechaEnvio DateTime @default(now())
+
+  @@map("FORMULARIO")
+}
+
+model Interaccion {
+  id        String   @id @default(uuid())
+  buyerId   String
+  buyer     Buyer    @relation(fields: [buyerId], references: [id], onDelete: Cascade)
+  tipo      String   // VISITA, DESCARGA_LEAD_MAGNET, CLIC_ANUNCIO, ENVIO_FORMULARIO, MENSAJE_WHATSAPP
+  detalle   String?  @db.NVarChar(Max)
+  fechaHora DateTime @default(now())
+
+  @@map("INTERACCION")
+}
+
+model Lead {
+  id                  String         @id @default(uuid())
+  buyerId             String         @unique
+  buyer               Buyer          @relation(fields: [buyerId], references: [id], onDelete: Cascade)
+  scoreCalificado     Int
+  prioridad           String         @default("MEDIA") // ALTA, MEDIA, BAJA (Sección 4.3 del informe)
+  fechaCalificacion   DateTime       @default(now())
+  umbralSuperado      Boolean        @default(true)
+  criterioCalificacion String?       @db.NVarChar(Max) // Desglose JSON del score
+
+  conversaciones      Conversacion[]
+  diagnosticos        Diagnostico[]
+  propuestas          Propuesta[]
+  objeciones          Objecion[]
+  seguimientos        Seguimiento[]
+  cotizaciones        Cotizacion[]
+  pagos               Pago[]
+  payer               Payer?
+  customer            Customer?
+
+  @@map("LEAD")
+}
+
+// -----------------------------------------------------------------------------
+// Catálogo de Servicios y Reglas Comerciales
+// -----------------------------------------------------------------------------
+model Servicio {
+  id                String            @id @default(uuid())
+  nombre            String
+  codigo            String            @unique // TESIS_INTEGRAL, PLAN_TESIS, ANALISIS_ESTADISTICO, ARTICULO
+  descripcion       String            @db.NVarChar(Max)
+  tipoInvestigacion String            // TESIS, PLAN_DE_TESIS, ARTICULO_CIENTIFICO
+  precioBase        Decimal           @db.Decimal(10, 2)
+  precioMinimo      Decimal           @db.Decimal(10, 2)
+  precioMaximo      Decimal           @db.Decimal(10, 2)
+  plazoSemanasMin   Int               @default(4)
+  plazoSemanasMax   Int               @default(16)
+  maxCuotas         Int               @default(4)
+  activo            Boolean           @default(true)
+  reglasComerciales ReglaComercial[]
+  propuestas        Propuesta[]
+  cotizaciones      Cotizacion[]
+  customers         Customer[]
+
+  @@map("SERVICIO")
+}
+
+model ReglaComercial {
+  id                    String    @id @default(uuid())
+  servicioId            String
+  servicio              Servicio  @relation(fields: [servicioId], references: [id], onDelete: Cascade)
+  tipoInvestigacion     String?
+  descuentoMaximoPct    Decimal   @default(15.00) @db.Decimal(5, 2) // Ej. 15.00%
+  descuentoPagoUnicoPct Decimal   @default(10.00) @db.Decimal(5, 2) // Ej. 10.00%
+  cuotaMinima           Decimal   @default(200.00) @db.Decimal(10, 2)
+  plazoMinimoDias       Int       @default(15)
+  plazoMaximoDias       Int       @default(120)
+  condicionesEspeciales String?   @db.NVarChar(Max)
+  activo                Boolean   @default(true)
+
+  @@map("REGLA_COMERCIAL")
+}
+
+// -----------------------------------------------------------------------------
+// Negociación, Conversaciones y Agente IA
+// -----------------------------------------------------------------------------
+model PerfilNegociacion {
+  id                      String   @id @default(uuid())
+  buyerId                 String   @unique
+  buyer                   Buyer    @relation(fields: [buyerId], references: [id], onDelete: Cascade)
+  presupuestoEstimado     Decimal? @db.Decimal(10, 2)
+  urgenciaNivel           String?  // ALTA, MEDIA, BAJA
+  objecionPredominante    String?  // PRECIO, TIEMPO, CONFIANZA
+  scoreSensibilidadPrecio Int?     @default(50) // 0-100
+  notas                   String?  @db.NVarChar(Max)
+
+  @@map("PERFIL_NEGOCIACION")
+}
+
+model Conversacion {
+  id                  String        @id @default(uuid())
+  buyerId             String
+  buyer               Buyer         @relation(fields: [buyerId], references: [id], onDelete: Cascade)
+  leadId              String?
+  lead                Lead?         @relation(fields: [leadId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  canal               String        @default("WHATSAPP")
+  estadoEtapa         String        @default("DISCOVERY") // DISCOVERY, DIAGNOSTIC, PROPOSAL, OBJECTION_HANDLING, NEGOTIATION, CLOSING, PAYMENT, PAYMENT_PENDING, CONVERTED, HUMAN_ESCALATION, ABANDONED
+  fechaInicio         DateTime      @default(now())
+  fechaUltimaActividad DateTime     @default(now())
+
+  mensajes            Mensaje[]
+  diagnosticos        Diagnostico[]
+  propuestas          Propuesta[]
+  objeciones          Objecion[]
+  seguimientos        Seguimiento[]
+
+  @@map("CONVERSACION")
+}
+
+model Mensaje {
+  id             String       @id @default(uuid())
+  conversacionId String
+  conversacion   Conversacion @relation(fields: [conversacionId], references: [id], onDelete: Cascade)
+  direccion      String       // INCOMING (Cliente->Bot), OUTGOING (Bot->Cliente)
+  remitente      String       // CLIENTE, AGENTE_IA, ASESOR_HUMANO
+  contenido      String       @db.NVarChar(Max)
+  tipoMensaje    String       @default("TEXT") // TEXT, PAYMENT_LINK, QUOTE, DOCUMENT
+  fechaHora      DateTime     @default(now())
+  estadoEntrega  String       @default("SENT") // SENT, DELIVERED, READ, FAILED
+  respuestaA     String?
+  metadata       String?      @db.NVarChar(Max) // JSON de tools invocadas, etc.
+
+  @@map("MENSAJE")
+}
+
+model Diagnostico {
+  id                    String       @id @default(uuid())
+  conversacionId        String
+  conversacion          Conversacion @relation(fields: [conversacionId], references: [id], onDelete: Cascade)
+  leadId                String?
+  lead                  Lead?        @relation(fields: [leadId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  temaInvestigacion     String?
+  avanceActualPct       Int          @default(0) // 0-100%
+  principalesDificultades String?    @db.NVarChar(Max)
+  resumenIA             String?      @db.NVarChar(Max)
+  fechaDiagnostico      DateTime     @default(now())
+
+  @@map("DIAGNOSTICO")
+}
+
+model Propuesta {
+  id                   String        @id @default(uuid())
+  conversacionId       String
+  conversacion         Conversacion  @relation(fields: [conversacionId], references: [id], onDelete: Cascade)
+  leadId               String?
+  lead                 Lead?         @relation(fields: [leadId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  servicioId           String
+  servicio             Servicio      @relation(fields: [servicioId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  precioOriginal       Decimal       @db.Decimal(10, 2)
+  precioPropuesto      Decimal       @db.Decimal(10, 2)
+  descuentoAplicadoPct Decimal       @default(0) @db.Decimal(5, 2)
+  numeroCuotas         Int           @default(1)
+  montoPorCuota        Decimal       @db.Decimal(10, 2)
+  plazoDias            Int           @default(30)
+  justificacion        String?       @db.NVarChar(Max)
+  estado               String        @default("BORRADOR") // BORRADOR, ENVIADA, ACEPTADA, RECHAZADA
+  fechaCreacion        DateTime      @default(now())
+  cotizaciones         Cotizacion[]
+
+  @@map("PROPUESTA")
+}
+
+model Objecion {
+  id             String       @id @default(uuid())
+  conversacionId String
+  conversacion   Conversacion @relation(fields: [conversacionId], references: [id], onDelete: Cascade)
+  leadId         String?
+  lead           Lead?        @relation(fields: [leadId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  tipo           String       // PRECIO, TIEMPO, CONFIANZA, COMPARACION, METODO_PAGO, OTRO
+  descripcion    String       @db.NVarChar(Max)
+  respuestaAgente String?     @db.NVarChar(Max)
+  resuelta       Boolean      @default(false)
+  fechaRegistro  DateTime     @default(now())
+
+  @@map("OBJECION")
+}
+
+model Seguimiento {
+  id             String       @id @default(uuid())
+  conversacionId String
+  conversacion   Conversacion @relation(fields: [conversacionId], references: [id], onDelete: Cascade)
+  leadId         String?
+  lead           Lead?        @relation(fields: [leadId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  tipo           String       // RECORDATORIO, CONSULTA_DUDA, OFERTA_LIMITADA
+  fechaProgramada DateTime
+  fechaEjecutada DateTime?
+  estado         String       @default("PENDIENTE") // PENDIENTE, EJECUTADO, CANCELADO
+  resultado      String?
+
+  @@map("SEGUIMIENTO")
+}
+
+// -----------------------------------------------------------------------------
+// Cotizaciones y Pasarela de Pagos (LEAD -> PAYER)
+// -----------------------------------------------------------------------------
+model Cotizacion {
+  id               String      @id @default(uuid())
+  leadId           String
+  lead             Lead        @relation(fields: [leadId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  propuestaId      String?
+  propuesta        Propuesta?  @relation(fields: [propuestaId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  servicioId       String
+  servicio         Servicio    @relation(fields: [servicioId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  codigoCotizacion String      @unique // COT-2026-0001
+  subtotal         Decimal     @db.Decimal(10, 2)
+  descuento        Decimal     @default(0) @db.Decimal(10, 2)
+  total            Decimal     @db.Decimal(10, 2)
+  cuotas           Int         @default(1)
+  plazoEntregaDias Int         @default(30)
+  fechaEmision     DateTime    @default(now())
+  fechaExpiracion  DateTime
+  estado           String      @default("ACTIVA") // ACTIVA, ACEPTADA, CANCELADA, EXPIRADA
+
+  pagos            Pago[]
+  customers        Customer[]
+
+  @@map("COTIZACION")
+}
+
+model Pago {
+  id                   String      @id @default(uuid())
+  cotizacionId         String
+  cotizacion           Cotizacion  @relation(fields: [cotizacionId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  buyerId              String
+  buyer                Buyer       @relation(fields: [buyerId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  leadId               String?
+  lead                 Lead?       @relation(fields: [leadId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  gatewayProveedor     String      // STRIPE, MERCADOPAGO, CULQI
+  gatewayTransactionId String?     @unique
+  monto                Decimal     @db.Decimal(10, 2)
+  moneda               String      @default("PEN")
+  metodoPago           String      @default("CARD") // CARD, YAPE, TRANSFER
+  estado               String      @default("PENDIENTE") // PENDIENTE, CONFIRMADO, FALLIDO, REEMBOLSADO
+  fechaCreacion        DateTime    @default(now())
+  fechaConfirmacion    DateTime?
+  gatewayPayload       String?     @db.NVarChar(Max)
+  comprobanteUrl       String?
+
+  payer                Payer[]
+
+  @@map("PAGO")
+}
+
+model Payer {
+  id                  String    @id @default(uuid())
+  buyerId             String    @unique
+  buyer               Buyer     @relation(fields: [buyerId], references: [id], onDelete: Cascade)
+  leadId              String?   @unique
+  lead                Lead?     @relation(fields: [leadId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  primerPagoId        String
+  primerPago          Pago      @relation(fields: [primerPagoId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  montoTotalPagado    Decimal   @default(0) @db.Decimal(10, 2)
+  metodoPrincipal     String    @default("CARD")
+  fechaConversionPayer DateTime @default(now())
+  estado              String    @default("ACTIVO")
+
+  customer            Customer?
+
+  @@map("PAYER")
+}
+
+// -----------------------------------------------------------------------------
+// Atención, Asesores y CUSTOMER (PAYER -> CUSTOMER)
+// -----------------------------------------------------------------------------
+model Asesor {
+  id                     String             @id @default(uuid())
+  nombres                String
+  apellidos              String
+  especialidad           String
+  gradoAcademico         String             // MAGISTER, DOCTOR, LICENCIADO
+  email                  String             @unique
+  whatsapp               String
+  maxClientesSimultaneos Int                @default(10)
+  clientesActivos        Int                @default(0)
+  activo                 Boolean            @default(true)
+
+  customers              Customer[]
+  asignaciones           AsignacionAsesor[]
+  sesiones               Sesion[]
+
+  @@map("ASESOR")
+}
+
+model Customer {
+  id                  String             @id @default(uuid())
+  buyerId             String             @unique
+  buyer               Buyer              @relation(fields: [buyerId], references: [id], onDelete: Cascade)
+  leadId              String?            @unique
+  lead                Lead?              @relation(fields: [leadId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  payerId             String             @unique
+  payer               Payer              @relation(fields: [payerId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  cotizacionId        String
+  cotizacion          Cotizacion         @relation(fields: [cotizacionId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  servicioId          String
+  servicio            Servicio           @relation(fields: [servicioId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  asesorId            String?
+  asesor              Asesor?            @relation(fields: [asesorId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  fechaInicioServicio DateTime           @default(now())
+  estadoServicio      String             @default("ACTIVO") // ACTIVO, EN_CURSO, FINALIZADO, PAUSADO
+  observaciones       String?            @db.NVarChar(Max)
+
+  asignaciones        AsignacionAsesor[]
+  sesiones            Sesion[]
+
+  @@map("CUSTOMER")
+}
+
+model AsignacionAsesor {
+  id              String    @id @default(uuid())
+  customerId      String
+  customer        Customer  @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  asesorId        String
+  asesor          Asesor    @relation(fields: [asesorId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  fechaAsignacion DateTime  @default(now())
+  motivo          String?
+  asignadoPor     String    @default("SISTEMA")
+  activo          Boolean   @default(true)
+
+  @@map("ASIGNACION_ASESOR")
+}
+
+model Sesion {
+  id                  String    @id @default(uuid())
+  customerId          String
+  customer            Customer  @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  asesorId            String
+  asesor              Asesor    @relation(fields: [asesorId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  numeroSesion        Int       @default(1)
+  fechaHoraProgramada DateTime
+  fechaHoraRealizada  DateTime?
+  temaTratado         String
+  estado              String    @default("PROGRAMADA") // PROGRAMADA, REALIZADA, REPROGRAMADA, CANCELADA
+  enlaceReunion       String?
+  observaciones       String?   @db.NVarChar(Max)
+
+  @@map("SESION")
+}
+
+// -----------------------------------------------------------------------------
+// Notificaciones y Configuración del Agente IA
+// -----------------------------------------------------------------------------
+model Notificacion {
+  id            String    @id @default(uuid())
+  usuarioId     String?
+  usuario       Usuario?  @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
+  tipo          String    // LEAD_CALIFICADO, NEGOCIACION_INICIADA, PAGO_CONFIRMADO, SESION_PROGRAMADA, ESCALACION_HUMANA
+  titulo        String
+  mensaje       String    @db.NVarChar(Max)
+  leido         Boolean   @default(false)
+  fechaCreacion DateTime  @default(now())
+  metadata      String?   @db.NVarChar(Max)
+
+  @@map("NOTIFICACION")
+}
+
+model ConfiguracionAgente {
+  id                       String   @id @default(uuid())
+  proveedorIA              String   @default("GEMINI") // GEMINI, GROK
+  modelo                   String   @default("gemini-1.5-flash")
+  promptSistema            String   @db.NVarChar(Max)
+  tono                     String   @default("Profesional, empático, académico y resolutivo")
+  estilo                   String   @default("Consultor experto en investigación universitaria")
+  permitirNegociacion      Boolean  @default(true)
+  maxDescuentoNegociablePct Decimal @default(15.00) @db.Decimal(5, 2)
+  maxCuotasNegociables     Int      @default(3)
+  reglasObjecionesJson     String?  @db.NVarChar(Max)
+  horarioInicio            String   @default("08:00")
+  horarioFin               String   @default("22:00")
+  activo                   Boolean  @default(true)
+
+  @@map("CONFIGURACION_AGENTE")
+}

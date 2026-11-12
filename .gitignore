@@ -1,0 +1,80 @@
+# =============================================================================
+# INBESTIGA.TESIS - .gitignore
+# Reglas de exclusión para Git y GitHub (Monorepo Next.js + NestJS + MSSQL)
+# =============================================================================
+
+# 1. Dependencias (Node.js & Workspaces)
+node_modules/
+.pnp
+.pnp.js
+
+# 2. Archivos de Entorno y Secretos (¡NUNCA subir credenciales a GitHub!)
+.env
+.env.*
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+apps/*/.env
+apps/*/.env.*
+packages/*/.env
+
+# Permitir explícitamente las plantillas de configuración pública
+!.env.example
+!apps/*/.env.example
+!packages/*/.env.example
+
+# 3. Compilación y Artefactos de Build
+dist/
+apps/*/dist/
+build/
+out/
+.next/
+apps/web/.next/
+*.tsbuildinfo
+
+# 4. Bases de Datos, Backups y Volúmenes de Contenedores
+mssql_data/
+data/
+*.mdf
+*.ldf
+*.ndf
+*.bak
+
+# 5. Logs y Archivos de Depuración
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# 6. Reportes de Pruebas y Cobertura
+coverage/
+.nyc_output/
+test-results/
+playwright-report/
+blob-report/
+playwright/.cache/
+
+# 7. Archivos del Sistema Operativo y Editores (IDEs)
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# 8. Archivos Temporales y Scratch
+tmp/
+temp/
+scratch/
+*.pid
+*.seed
+*.pid.lock
