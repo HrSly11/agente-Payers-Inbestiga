@@ -23,6 +23,7 @@ import {
 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { SCENARIOS_PRUEBA } from '@/components/payers/PayersModule';
+import { BICognitiveEnginePanel } from '@/components/payers/BICognitiveEnginePanel';
 
 const FILTROS = [
   { id: 'PENDIENTES', label: 'Pendientes' },
@@ -611,6 +612,10 @@ function PayersLiveChatContent() {
           )}
         </div>
       </div>
+
+      {activeId != null && detalle && (
+        <BICognitiveEnginePanel ordenDetalle={detalle} selectedOrdenId={activeId} />
+      )}
     </div>
   );
 }

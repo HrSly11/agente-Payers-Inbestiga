@@ -31,6 +31,7 @@ import {
   ThesisJourneyTrack,
 } from '@/components/payers/ThesisInteractiveWidgets';
 import { InteractiveThesisStage } from '@/components/payers/InteractiveThesisStage';
+import { BICognitiveEnginePanel } from '@/components/payers/BICognitiveEnginePanel';
 
 const QUICK_PROMPTS = [
   '¿Cuál es mi siguiente cuota y cuándo debería pagar?',
@@ -604,6 +605,13 @@ export default function PayersCommandCenterPage() {
           onTriggerCelebration={() => setCelebrateCounter((c) => c + 1)}
           externalStageId={activeStageId}
           onStageChange={setActiveStageId}
+        />
+      </section>
+
+      <section id="seccion-cerebro-bi">
+        <BICognitiveEnginePanel
+          ordenDetalle={ordenDetalle}
+          selectedOrdenId={selectedOrdenId}
         />
       </section>
 
