@@ -95,6 +95,18 @@ export class WhatsAppService implements OnModuleInit {
     return this.evolution.sendTextMessage({ chatId: telefono, text: contenido });
   }
 
+  enviarPresencia(telefono: string, presence: 'composing' | 'recording') {
+    return this.evolution.sendPresence(telefono, presence);
+  }
+
+  getMediaBase64(messageKey: any) {
+    return this.evolution.getMediaBase64(messageKey);
+  }
+
+  enviarNotaDeVoz(telefono: string, audioBase64: string): Promise<SendMessageResult> {
+    return this.evolution.sendVoiceNote(telefono, audioBase64);
+  }
+
   async getStatus() {
     return this.evolution.getSessionStatus();
   }

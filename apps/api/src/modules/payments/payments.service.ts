@@ -1,5 +1,6 @@
 import { Injectable, Logger, NotFoundException, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service';
+import { DwService } from '../../database/dw.service';
 import { StripeProvider } from './providers/stripe.provider';
 import { CulqiProvider } from './providers/culqi.provider';
 import { MercadoPagoProvider } from './providers/mercadopago.provider';
@@ -12,6 +13,7 @@ export class PaymentsService {
 
   constructor(
     private readonly prisma: PrismaService,
+    private readonly dwService: DwService,
     private readonly stripeProvider: StripeProvider,
     private readonly culqiProvider: CulqiProvider,
     private readonly mercadoPagoProvider: MercadoPagoProvider,
@@ -428,11 +430,22 @@ export class PaymentsService {
    * Confirma en el sistema los pagos APROBADOS en Mercado Pago para una orden.
    * Consulta la API de MP por external_reference (sin webhook) y registra cada pago una sola vez.
    */
-  async verificarPagoMercadoPago(cotizacionId: string) {
+  async verificarPagoMercadoPago(cotizacionId: string, paymentId?: string) {
     const cot = await this.getCotizacion(cotizacionId);
     const codigo = cot.codigoCotizacion || cot.id;
-    const pagosMp = await this.mercadoPagoProvider.buscarPagosPorReferencia(codigo);
-    const aprobados = pagosMp.filter((p) => p.status === 'approved');
+    let aprobados: any[] = [];
+
+    if (paymentId) {
+      const p = await this.mercadoPagoProvider.obtenerPago(paymentId);
+      if (p && p.status === 'approved') {
+        aprobados = [p];
+      }
+    } else {
+      const pagosMp = await this.mercadoPagoProvider.buscarPagosPorReferencia(codigo);
+      aprobados = pagosMp
+        .filter((p) => p.status === 'approved')
+        .sort((a, b) => new Date(b.date_created).getTime() - new Date(a.date_created).getTime());
+    }
 
     const confirmados: any[] = [];
     for (const p of aprobados) {
@@ -442,13 +455,17 @@ export class PaymentsService {
       `);
       if (existente.length > 0) continue;
 
-      const res = await this.procesarPagoCheckout({
-        cotizacionId: codigo,
-        metodoPago: 'CARD',
-        montoAbonar: Number(p.transaction_amount),
-        referencia,
-      });
-      confirmados.push({ mpPaymentId: p.id, monto: p.transaction_amount, ...res });
+      try {
+        const res = await this.procesarPagoCheckout({
+          cotizacionId: codigo,
+          metodoPago: 'CARD',
+          montoAbonar: Number(p.transaction_amount),
+          referencia,
+        });
+        confirmados.push({ mpPaymentId: p.id, monto: p.transaction_amount, ...res });
+      } catch (err: any) {
+        this.logger.warn(`No se pudo procesar pago MP-${p.id}: ${err.message}`);
+      }
     }
 
     let activacionRecuperada: any = null;
@@ -459,14 +476,33 @@ export class PaymentsService {
       });
     }
 
+    if (confirmados.length > 0) {
+      await this.dwService.runEtl().catch((e) => this.logger.warn('Error en sync DW post MP:', e));
+    }
+
     return {
       referencia: codigo,
-      pagosEncontrados: pagosMp.length,
+      pagosEncontrados: aprobados.length,
       pagosAprobados: aprobados.length,
       nuevosConfirmados: confirmados.length,
       status: aprobados.length > 0 ? 'confirmed' : 'pending',
       activacionRecuperada,
       confirmados,
+    };
+  }
+
+  async corregirPagoOperacion42() {
+    await this.prisma.$executeRawUnsafe(`
+      UPDATE INBESTIGA_TESIS.dbo.PAGO
+      SET monto_pagado = 324.00,
+          comision_pasarela = 12.93,
+          referencia = 'MP-189364022174'
+      WHERE orden_pago_id = 42;
+    `);
+    await this.dwService.runEtl().catch((e) => this.logger.warn('Error en sync DW corregirPago42:', e));
+    return {
+      exito: true,
+      mensaje: 'Pago corregido a S/ 324.00 con referencia MP-189364022174 y ETL sincronizado',
     };
   }
 

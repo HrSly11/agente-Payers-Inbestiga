@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import Link from 'next/link';
 import {
   UserCheck,
@@ -34,6 +35,142 @@ import {
 } from 'lucide-react';
 import { api } from '@/lib/api';
 
+function getHitoFinancieroInfo(faseNumero: number, cuotasPago: any[] = []) {
+  if (!cuotasPago || cuotasPago.length === 0) {
+    if (faseNumero === 6) {
+      return {
+        tipo: 'CIERRE',
+        momento: 'Requisito de Grado: Expediente sin saldo pendiente para acta y sustentación oficial',
+      };
+    }
+    return null;
+  }
+  const totalCuotas = cuotasPago.length;
+
+  if (totalCuotas === 1) {
+    if (faseNumero === 1) {
+      const c = cuotasPago[0];
+      return {
+        tipo: 'CUOTA',
+        numero: 1,
+        monto: c.monto_programado,
+        porcentaje: 100,
+        estado: c.estado,
+        momento: 'Abono 100% Contado: Apertura inmediata del expediente y asignación de asesor',
+      };
+    }
+    if (faseNumero === 6) {
+      return {
+        tipo: 'CIERRE',
+        momento: 'Requisito de Grado: Expediente cancelado al 100% (Saldo S/ 0.00) para dictamen y trámite SUNEDU',
+      };
+    }
+    return null;
+  }
+
+  if (totalCuotas === 2) {
+    if (faseNumero === 1) {
+      const c = cuotasPago.find((cp: any) => cp.numero_cuota === 1) || cuotasPago[0];
+      return {
+        tipo: 'CUOTA',
+        numero: 1,
+        monto: c.monto_programado,
+        porcentaje: c.porcentaje || 50,
+        estado: c.estado,
+        momento: 'Cuota inicial (50%): Apertura de servicio y elaboración del Plan de Tesis',
+      };
+    }
+    if (faseNumero === 3 || faseNumero === 4) {
+      const c = cuotasPago.find((cp: any) => cp.numero_cuota === 2) || cuotasPago[1];
+      return {
+        tipo: 'CUOTA',
+        numero: 2,
+        monto: c.monto_programado,
+        porcentaje: c.porcentaje || 50,
+        estado: c.estado,
+        momento: 'Cuota final (50%): Exigible tras aprobar metodología para ejecutar campo y redacción',
+      };
+    }
+    if (faseNumero === 6) {
+      return {
+        tipo: 'CIERRE',
+        momento: 'Requisito de Grado: Saldo S/ 0.00 y Turnitin < 15% obligatorios para acta de sustentación',
+      };
+    }
+    return null;
+  }
+
+  // Plan habitual de 3 Cuotas (30 / 40 / 30)
+  if (totalCuotas === 3) {
+    if (faseNumero === 1) {
+      const c = cuotasPago.find((cp: any) => cp.numero_cuota === 1) || cuotasPago[0];
+      return {
+        tipo: 'CUOTA',
+        numero: 1,
+        monto: c.monto_programado,
+        porcentaje: c.porcentaje || 30,
+        estado: c.estado,
+        momento: 'Cuota inicial (30%): Activación de servicio, asignación de asesor y Plan de Tesis',
+      };
+    }
+    if (faseNumero === 2) {
+      const c = cuotasPago.find((cp: any) => cp.numero_cuota === 2) || cuotasPago[1];
+      return {
+        tipo: 'CUOTA',
+        numero: 2,
+        monto: c.monto_programado,
+        porcentaje: c.porcentaje || 40,
+        estado: c.estado,
+        momento: 'Cuota por hito (40%): Se exige al aprobar Cap. I y II (Marco Teórico Scopus / SciELO)',
+      };
+    }
+    if (faseNumero === 4) {
+      const c = cuotasPago.find((cp: any) => cp.numero_cuota === 3) || cuotasPago[2];
+      return {
+        tipo: 'CUOTA',
+        numero: 3,
+        monto: c.monto_programado,
+        porcentaje: c.porcentaje || 30,
+        estado: c.estado,
+        momento: 'Cuota por hito (30%): Se exige al aprobar Metodología para procesar SPSS/R y Resultados',
+      };
+    }
+    if (faseNumero === 6) {
+      return {
+        tipo: 'CIERRE',
+        momento: 'Requisito de Grado: Saldo S/ 0.00 y Turnitin < 15% obligatorios para jurados y registro SUNEDU',
+      };
+    }
+    return null;
+  }
+
+  // 4 o más cuotas: mapeo determinístico
+  const cuotaAsociada = cuotasPago.find((cp: any) => {
+    const targetFase = Math.min(5, Math.max(1, Math.ceil((Number(cp.numero_cuota) / totalCuotas) * 5)));
+    return targetFase === faseNumero;
+  });
+
+  if (cuotaAsociada) {
+    return {
+      tipo: 'CUOTA',
+      numero: cuotaAsociada.numero_cuota,
+      monto: cuotaAsociada.monto_programado,
+      porcentaje: cuotaAsociada.porcentaje,
+      estado: cuotaAsociada.estado,
+      momento: `Cuota #${cuotaAsociada.numero_cuota} (${cuotaAsociada.porcentaje}%): Exigible tras validar este entregable`,
+    };
+  }
+
+  if (faseNumero === 6) {
+    return {
+      tipo: 'CIERRE',
+      momento: 'Requisito de Grado: Saldo S/ 0.00 obligatorio para dictamen de jurados y sustentación',
+    };
+  }
+
+  return null;
+}
+
 export default function CustomersPage() {
   const [customers, setCustomers] = useState<any[]>([]);
   const [advisors, setAdvisors] = useState<any[]>([]);
@@ -44,10 +181,26 @@ export default function CustomersPage() {
   const [vista, setVista] = useState<'tarjetas' | 'tabla'>('tarjetas');
 
   // Estados del Modal / Drawer de Trazabilidad
+  const [mounted, setMounted] = useState(false);
   const [selectedCustomerId, setSelectedCustomerId] = useState<string | null>(null);
   const [trazabilidad, setTrazabilidad] = useState<any | null>(null);
   const [loadingTrazabilidad, setLoadingTrazabilidad] = useState(false);
   const [activeTab, setActiveTab] = useState<'fases' | 'bitacora' | 'sesiones' | 'contrato'>('fases');
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  useEffect(() => {
+    if (selectedCustomerId) {
+      document.body.style.overflow = 'hidden';
+    } else {
+      document.body.style.overflow = '';
+    }
+    return () => {
+      document.body.style.overflow = '';
+    };
+  }, [selectedCustomerId]);
 
   // Estado del Formulario para Registrar Nueva Entrada en la Bitácora
   const [mostrarFormBitacora, setMostrarFormBitacora] = useState(false);
@@ -57,21 +210,29 @@ export default function CustomersPage() {
     hito: 'METODOLOGIA',
     titulo: '',
     porcentajeAvance: 60,
-    estadoRevision: 'APROBADO',
+    estadoRevision: 'EN_REVISION',
     observaciones: '',
     turnitinPct: 6,
     proximaEntrega: '',
   });
 
-  const cargarDatos = () => {
+  const cargarDatos = async () => {
     setLoading(true);
-    Promise.all([api.getCustomers(), api.getAdvisors()])
-      .then(([custs, advs]) => {
-        setCustomers(custs || []);
-        setAdvisors(advs || []);
-      })
-      .catch((err) => console.error(err))
-      .finally(() => setLoading(false));
+    try {
+      const custs = await api.getCustomers().catch((err) => {
+        console.error('Error cargando customers:', err);
+        return [];
+      });
+      setCustomers(custs || []);
+
+      const advs = await api.getAdvisors().catch((err) => {
+        console.error('Error cargando advisors:', err);
+        return [];
+      });
+      setAdvisors(advs || []);
+    } finally {
+      setLoading(false);
+    }
   };
 
   useEffect(() => {
@@ -150,7 +311,7 @@ export default function CustomersPage() {
         hito: 'METODOLOGIA',
         titulo: '',
         porcentajeAvance: 70,
-        estadoRevision: 'APROBADO',
+        estadoRevision: 'EN_REVISION',
         observaciones: '',
         turnitinPct: 5,
         proximaEntrega: '',
@@ -174,11 +335,16 @@ export default function CustomersPage() {
   const bachillerCount = customers.filter(
     (c) => c.modalidad === 'BACHILLER' || c.servicio?.tipoInvestigacion === 'TRABAJO_INVESTIGACION_BACHILLER'
   ).length;
+  const toSafeNumber = (val: unknown, fallback: number): number => {
+    if (val === null || val === undefined || val === '') return fallback;
+    const parsed = Number(val);
+    return Number.isFinite(parsed) ? parsed : fallback;
+  };
   const promedioAvance = totalCustomers > 0
-    ? Math.round(customers.reduce((acc, c) => acc + (c.progresoGlobal || 40), 0) / totalCustomers)
+    ? Math.round(customers.reduce((acc, c) => acc + toSafeNumber(c.progresoGlobal, 40), 0) / totalCustomers)
     : 0;
   const promedioTurnitin = totalCustomers > 0
-    ? (customers.reduce((acc, c) => acc + (c.turnitinPct || 6), 0) / totalCustomers).toFixed(1)
+    ? (customers.reduce((acc, c) => acc + toSafeNumber(c.turnitinPct, 6), 0) / totalCustomers).toFixed(1)
     : '5.8';
 
   // Filtrado de la lista
@@ -196,7 +362,7 @@ export default function CustomersPage() {
   });
 
   return (
-    <div className="space-y-7 animate-fade-in pb-12 overflow-x-hidden">
+    <div className="space-y-7 pb-12">
       {/* Header */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-200 dark:border-slate-800 pb-5">
         <div className="min-w-0">
@@ -284,8 +450,8 @@ export default function CustomersPage() {
               <ShieldCheck className="w-4 h-4" />
             </span>
           </div>
-          <div className="mt-2 flex items-baseline gap-2">
-            <span className="font-heading text-2xl sm:text-3xl font-black text-emerald-700 dark:text-emerald-300">
+          <div className="mt-2 flex items-baseline gap-2 flex-wrap">
+            <span className="font-heading text-2xl sm:text-3xl font-black text-emerald-700 dark:text-emerald-300 tabular-nums">
               {promedioTurnitin}%
             </span>
             <span className="text-[11px] text-emerald-700 dark:text-emerald-400 font-bold">promedio</span>
@@ -673,8 +839,13 @@ export default function CustomersPage() {
       {/* ========================================================================= */}
       {/* MODAL / DRAWER DE TRAZABILIDAD ACADÉMICA Y BITÁCORA DEL CLIENTE           */}
       {/* ========================================================================= */}
-      {selectedCustomerId && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/60 backdrop-blur-sm animate-fade-in overflow-y-auto">
+      {mounted && selectedCustomerId && createPortal(
+        <div
+          onClick={(e) => {
+            if (e.target === e.currentTarget) cerrarTrazabilidad();
+          }}
+          className="fixed inset-0 z-[9999] flex items-center justify-center p-3 sm:p-4 bg-black/75 backdrop-blur-md overflow-y-auto animate-fade-in"
+        >
           <div className="glass-panel w-full max-w-4xl max-h-[92vh] rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xl overflow-hidden flex flex-col bg-white dark:bg-slate-900 my-auto">
             {/* Header del Modal */}
             <div className="p-4 sm:p-5 border-b border-slate-200 dark:border-slate-800 bg-gradient-to-r from-purple-50 via-slate-50 to-sky-50/40 dark:from-slate-900 dark:via-purple-950/20 dark:to-slate-900 flex items-start justify-between gap-3 shrink-0">
@@ -935,6 +1106,7 @@ export default function CustomersPage() {
                           const estaAprobado = fase.estado === 'COMPLETADO' || fase.estado === 'APROBADO';
                           const estaObservado = fase.estado === 'OBSERVADO';
                           const enCurso = fase.estado === 'EN_REVISION' || (fase.porcentaje > 0 && fase.porcentaje < 100);
+                          const hitoFinanciero = getHitoFinancieroInfo(fase.numero, trazabilidad?.cuotasPago);
 
                           return (
                             <div
@@ -1012,6 +1184,66 @@ export default function CustomersPage() {
                                 <div className="mt-2.5 p-2.5 rounded-lg bg-white/80 dark:bg-slate-900/80 border border-slate-200 dark:border-slate-800 text-[11px] text-slate-700 dark:text-slate-300">
                                   <span className="font-bold text-purple-700 dark:text-purple-400">Dictamen Asesor: </span>
                                   <span>{fase.observacionAsesor}</span>
+                                </div>
+                              )}
+
+                              {/* Hito Financiero & Momento de Cobro (Trazabilidad Cruzada Académica-Financiera) */}
+                              {hitoFinanciero && (
+                                <div
+                                  className={`mt-2.5 p-2.5 rounded-lg border text-[11px] flex flex-wrap items-center justify-between gap-2 ${
+                                    hitoFinanciero.tipo === 'CIERRE'
+                                      ? 'bg-purple-50/60 dark:bg-purple-950/20 border-purple-200 dark:border-purple-800/60 text-purple-900 dark:text-purple-200'
+                                      : hitoFinanciero.estado === 'PAGADA'
+                                        ? 'bg-emerald-50/70 dark:bg-emerald-950/25 border-emerald-300 dark:border-emerald-800/60 text-emerald-900 dark:text-emerald-200'
+                                        : hitoFinanciero.estado === 'EXIGIBLE'
+                                          ? 'bg-sky-50/80 dark:bg-sky-950/30 border-sky-300 dark:border-sky-800 text-sky-900 dark:text-sky-200 shadow-sm'
+                                          : 'bg-amber-50/70 dark:bg-amber-950/25 border-amber-300 dark:border-amber-800/60 text-amber-900 dark:text-amber-200'
+                                  }`}
+                                >
+                                  <div className="flex items-center gap-1.5 flex-wrap">
+                                    {hitoFinanciero.tipo === 'CIERRE' ? (
+                                      <GraduationCap className="w-3.5 h-3.5 text-purple-600 shrink-0" />
+                                    ) : (
+                                      <span className="text-xs shrink-0">💳</span>
+                                    )}
+                                    <span className="font-bold">
+                                      {hitoFinanciero.tipo === 'CIERRE'
+                                        ? 'Cierre Contractual & Grado Académico:'
+                                        : `Hito Financiero: Cuota #${hitoFinanciero.numero} (${hitoFinanciero.porcentaje}% · S/ ${Number(hitoFinanciero.monto).toFixed(2)}) —`}
+                                    </span>
+                                    <span className="font-medium opacity-90">{hitoFinanciero.momento}</span>
+                                  </div>
+
+                                  <div className="flex items-center gap-2">
+                                    {hitoFinanciero.tipo === 'CUOTA' && (
+                                      <span
+                                        className={`px-2 py-0.5 rounded-full text-[10px] font-black tracking-wider uppercase shrink-0 ${
+                                          hitoFinanciero.estado === 'PAGADA'
+                                            ? 'bg-emerald-200 text-emerald-900 dark:bg-emerald-900 dark:text-emerald-100'
+                                            : hitoFinanciero.estado === 'EXIGIBLE'
+                                              ? 'bg-sky-200 text-sky-900 dark:bg-sky-900 dark:text-sky-100 animate-pulse'
+                                              : 'bg-amber-200 text-amber-900 dark:bg-amber-900 dark:text-amber-100'
+                                        }`}
+                                      >
+                                        {hitoFinanciero.estado === 'PAGADA'
+                                          ? '✓ Pagada'
+                                          : hitoFinanciero.estado === 'EXIGIBLE'
+                                            ? '⚡ Exigible en Pasarela'
+                                            : '🔒 En Espera de Hito'}
+                                      </span>
+                                    )}
+
+                                    {hitoFinanciero.estado === 'EXIGIBLE' && trazabilidad?.codigoOrden && (
+                                      <Link
+                                        href={`/checkout/${trazabilidad.codigoOrden}`}
+                                        target="_blank"
+                                        className="text-[10px] font-bold text-sky-700 dark:text-sky-300 hover:underline flex items-center gap-1 shrink-0"
+                                      >
+                                        <span>Ir a Pagar</span>
+                                        <ExternalLink className="w-3 h-3" />
+                                      </Link>
+                                    )}
+                                  </div>
                                 </div>
                               )}
                             </div>
@@ -1503,7 +1735,8 @@ export default function CustomersPage() {
               </button>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );

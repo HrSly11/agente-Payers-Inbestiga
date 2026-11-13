@@ -10,11 +10,15 @@ export class AgentConfigController {
   @Get()
   @ApiOperation({ summary: 'Obtener configuración vigente del Agente IA de negociación' })
   async getConfig() {
-    const config = await this.prisma.configuracionAgente.findFirst({
-      where: { activo: true },
-      orderBy: { id: 'desc' },
-    });
-    return config;
+    try {
+      const config = await this.prisma.configuracionAgente.findFirst({
+        where: { activo: true },
+        orderBy: { id: 'desc' },
+      });
+      return config;
+    } catch (e: any) {
+      return null;
+    }
   }
 
   @Put()

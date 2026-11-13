@@ -33,6 +33,8 @@ import {
 } from '@/components/payers/ThesisInteractiveWidgets';
 import { InteractiveThesisStage } from '@/components/payers/InteractiveThesisStage';
 import { BICognitiveDrawer } from '@/components/payers/BICognitiveEnginePanel';
+import { useRole } from '@/context/RoleContext';
+import StudentLandingSimulation from '@/components/student/StudentLandingSimulation';
 
 const QUICK_PROMPTS = [
   '¿Cuál es mi siguiente cuota y cuándo debería pagar?',
@@ -51,6 +53,7 @@ const FEATURED_CLIENTS = [
 type PipelineFocusTarget = 'CRONOGRAMA' | 'CHAT' | 'PASARELA' | 'RUTA_TESIS' | null;
 
 export default function PayersCommandCenterPage() {
+  const { isAuthenticated, role } = useRole();
   const prefersReducedMotion = useReducedMotion();
   const [selectedOrdenId, setSelectedOrdenId] = useState<number>(42);
   const [searchCliente, setSearchCliente] = useState<string>('');
@@ -93,15 +96,17 @@ export default function PayersCommandCenterPage() {
   }, []);
 
   useEffect(() => {
+    if (!isAuthenticated || role !== 'ADMIN') return;
     cargarOverview();
-  }, [cargarOverview]);
+  }, [cargarOverview, isAuthenticated, role]);
 
   useEffect(() => {
+    if (!isAuthenticated || role !== 'ADMIN') return;
     cargarOrdenSeleccionada(selectedOrdenId);
     setActionBanner(null);
     setRecentTools([]);
     setActiveCuotaHighlight(null);
-  }, [selectedOrdenId, cargarOrdenSeleccionada]);
+  }, [selectedOrdenId, cargarOrdenSeleccionada, isAuthenticated, role]);
 
   useEffect(() => {
     if (chatScrollRef.current) {
@@ -272,6 +277,10 @@ export default function PayersCommandCenterPage() {
   const connector1Active = Boolean(orden || cuotas.length > 0);
   const connector2Active = tieneCuotaActivaOPagada;
   const connector3Active = tienePagoConfirmado;
+
+  if (!isAuthenticated || role === 'ESTUDIANTE') {
+    return <StudentLandingSimulation />;
+  }
 
   return (
     <div className="relative space-y-6 pb-8">

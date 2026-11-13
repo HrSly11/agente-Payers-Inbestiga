@@ -17,6 +17,7 @@ import { DashboardModule } from './modules/dashboard/dashboard.module';
 import { AlertsModule } from './modules/alerts/alerts.module';
 import { PayersModule } from './modules/payers/payers.module';
 import { TelegramModule } from './modules/telegram/telegram.module';
+import { BusinessRulesModule } from './modules/business-rules/business-rules.module';
 
 @Module({
   imports: [
@@ -38,6 +39,7 @@ import { TelegramModule } from './modules/telegram/telegram.module';
     AlertsModule,
     PayersModule,
     TelegramModule,
+    BusinessRulesModule,
   ],
 })
 export class AppModule {}

@@ -2,8 +2,9 @@ const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000/api/v
 
 export async function fetchApi(endpoint: string, options: RequestInit = {}) {
   const url = `${API_BASE}${endpoint.startsWith('/') ? endpoint : `/${endpoint}`}`;
-  const headers = {
-    'Content-Type': 'application/json',
+  const isFormData = typeof FormData !== 'undefined' && options.body instanceof FormData;
+  const headers: HeadersInit = {
+    ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
     ...(options.headers || {}),
   };
 
@@ -25,6 +26,16 @@ export async function fetchApi(endpoint: string, options: RequestInit = {}) {
     console.error(`[API Error] ${endpoint}:`, error);
     throw error;
   }
+}
+
+function postAudio(endpoint: string, ordenPagoId: number, audioBlob: Blob, filename = 'nota-voz.webm') {
+  const formData = new FormData();
+  formData.append('ordenPagoId', String(ordenPagoId));
+  formData.append('audio', audioBlob, filename);
+  return fetchApi(endpoint, {
+    method: 'POST',
+    body: formData,
+  });
 }
 
 export const api = {
@@ -83,6 +94,23 @@ export const api = {
       body: JSON.stringify(data),
     }),
 
+  // Catálogo Dinámico de Reglas de Negocio (REGLA_NEGOCIO en SQL Server)
+  getBusinessRules: () => fetchApi('/business-rules'),
+  createBusinessRule: (data: any) =>
+    fetchApi('/business-rules', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  updateBusinessRule: (codigo: string, data: any) =>
+    fetchApi(`/business-rules/${codigo}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+  deleteBusinessRule: (codigo: string) =>
+    fetchApi(`/business-rules/${codigo}`, {
+      method: 'DELETE',
+    }),
+
   // Clientes, Bitácora y Trazabilidad de Tesis
   getCustomers: (params: Record<string, string> = {}) => {
     const query = new URLSearchParams(params).toString();
@@ -138,10 +166,26 @@ export const api = {
   getPayersOverview: () => fetchApi('/payers/overview'),
   getPayerOrden: (id: number | string) => fetchApi(`/payers/ordenes/${id}`),
   enviarMensajePayerAgent: (ordenPagoId: number, mensaje: string) =>
+    fetchApi('/payers/agent/chat', {
+      method: 'POST',
+      body: JSON.stringify({ ordenPagoId, mensaje }),
+    }),
+  enviarMensajeWhatsapp: (ordenPagoId: number, mensaje: string) =>
     fetchApi('/whatsapp/agent-chat', {
       method: 'POST',
       body: JSON.stringify({ ordenPagoId, mensaje }),
     }),
+  enviarMensajeTelegram: (ordenPagoId: number, mensaje: string) =>
+    fetchApi('/telegram/agent-chat', {
+      method: 'POST',
+      body: JSON.stringify({ ordenPagoId, mensaje }),
+    }),
+  enviarAudioPayerAgent: (ordenPagoId: number, audioBlob: Blob, filename = 'nota-voz.webm') =>
+    postAudio('/payers/agent/voice-chat', ordenPagoId, audioBlob, filename),
+  enviarAudioWhatsapp: (ordenPagoId: number, audioBlob: Blob, filename = 'nota-voz.webm') =>
+    postAudio('/whatsapp/agent-voice', ordenPagoId, audioBlob, filename),
+  enviarAudioTelegram: (ordenPagoId: number, audioBlob: Blob, filename = 'nota-voz.webm') =>
+    postAudio('/telegram/agent-voice', ordenPagoId, audioBlob, filename),
   simularWebhookPayers: (ordenPagoId: number, medioPago?: 'Yape' | 'Plin' | 'Tarjeta') =>
     fetchApi('/payers/webhook/simular', {
       method: 'POST',
@@ -182,4 +226,12 @@ export const api = {
 
   // WhatsApp Status
   getWhatsAppStatus: () => fetchApi('/whatsapp/status'),
+
+  // Media & Real-Time Events (PAYERS Live Chat)
+  getMediaUrl: (path: string) => {
+    if (path.startsWith('http://') || path.startsWith('https://')) return path;
+    const base = API_BASE.replace(/\/$/, '');
+    return `${base}${path.startsWith('/') ? path : `/${path}`}`;
+  },
+  getPayersEventsUrl: () => `${API_BASE.replace(/\/$/, '')}/payers/events`,
 };

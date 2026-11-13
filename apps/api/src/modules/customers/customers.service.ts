@@ -16,6 +16,13 @@ export class CustomersService {
     private readonly cuotasHitoService: CuotasHitoService,
   ) {}
 
+  /** Coerce SQL DECIMAL/string values into finite JS numbers for JSON serialization. */
+  private toFiniteNumber(value: unknown, fallback: number): number {
+    if (value === null || value === undefined || value === '') return fallback;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : fallback;
+  }
+
   /**
    * Conversión definitiva del Funnel:
    * LEAD -> PAYER -> CUSTOMER
@@ -187,15 +194,18 @@ export class CustomersService {
   }
 
   private async obtenerTesisCustomers(onlyCustomerId?: number): Promise<any[]> {
-    const whereClause = onlyCustomerId != null ? `WHERE cu.customer_id = ${Number(onlyCustomerId)}` : '';
+    const whereClause =
+      onlyCustomerId != null
+        ? `WHERE ISNULL(cu.customer_id, op.orden_pago_id) = ${Number(onlyCustomerId)}`
+        : `WHERE cu.customer_id IS NOT NULL OR op.codigo_orden = 'ORD-2026-0042'`;
     const topClause = onlyCustomerId != null ? 'TOP 1' : 'TOP 20';
     const rows: any[] = await this.prisma.$queryRawUnsafe(`
       SELECT ${topClause}
-        cu.customer_id,
-        cu.fecha_activacion,
-        cu.estado_servicio,
+        ISNULL(cu.customer_id, op.orden_pago_id) AS customer_id,
+        ISNULL(cu.fecha_activacion, GETDATE()) AS fecha_activacion,
+        ISNULL(cu.estado_servicio, 'ACTIVO') AS estado_servicio,
         py.payer_id,
-        py.orden_pago_id,
+        op.orden_pago_id,
         op.codigo_orden,
         op.monto_comprometido,
         op.estado AS orden_estado,
@@ -227,9 +237,9 @@ export class CustomersService {
           WHERE pg.orden_pago_id = op.orden_pago_id AND pg.estado = 'CONFIRMADO'
           ORDER BY pg.pago_id DESC
         ) AS ultima_referencia
-      FROM INBESTIGA_TESIS.dbo.CUSTOMER cu
-      INNER JOIN INBESTIGA_TESIS.dbo.PAYER py ON py.payer_id = cu.payer_id
-      INNER JOIN INBESTIGA_TESIS.dbo.ORDEN_PAGO op ON op.orden_pago_id = py.orden_pago_id
+      FROM INBESTIGA_TESIS.dbo.ORDEN_PAGO op
+      LEFT JOIN INBESTIGA_TESIS.dbo.PAYER py ON py.orden_pago_id = op.orden_pago_id
+      LEFT JOIN INBESTIGA_TESIS.dbo.CUSTOMER cu ON cu.payer_id = py.payer_id
       INNER JOIN INBESTIGA_TESIS.dbo.MODALIDAD_PAGO mp ON mp.modalidad_pago_id = op.modalidad_pago_id
       INNER JOIN INBESTIGA_TESIS.dbo.PROPUESTA pr ON pr.propuesta_id = op.propuesta_id
       INNER JOIN INBESTIGA_TESIS.dbo.SERVICIO s ON s.servicio_id = pr.servicio_id
@@ -247,17 +257,27 @@ export class CustomersService {
       ) aa
       LEFT JOIN INBESTIGA_TESIS.dbo.ASESOR a ON a.asesor_id = aa.asesor_id
       ${whereClause}
-      ORDER BY CASE WHEN op.codigo_orden = 'ORD-2026-0042' THEN 0 ELSE 1 END, cu.customer_id DESC;
+      ORDER BY CASE WHEN op.codigo_orden = 'ORD-2026-0042' THEN 0 ELSE 1 END, ISNULL(cu.customer_id, op.orden_pago_id) DESC;
     `);
+
+    const ordenIds = rows
+      .map((r) => Number(r.orden_pago_id))
+      .filter((id) => Number.isFinite(id) && id > 0);
+    let allCuotas: any[] = [];
+    if (ordenIds.length > 0) {
+      allCuotas = await this.prisma.$queryRawUnsafe(`
+        SELECT cuota_id, orden_pago_id, numero_cuota, porcentaje, monto_programado, condicion, fecha_vencimiento, estado
+        FROM INBESTIGA_TESIS.dbo.CUOTA_PAGO
+        WHERE orden_pago_id IN (${ordenIds.join(',')})
+        ORDER BY orden_pago_id ASC, numero_cuota ASC;
+      `);
+    }
 
     const out: any[] = [];
     for (const r of rows) {
-      const cuotasPago: any[] = await this.prisma.$queryRawUnsafe(`
-        SELECT cuota_id, orden_pago_id, numero_cuota, porcentaje, monto_programado, condicion, fecha_vencimiento, estado
-        FROM INBESTIGA_TESIS.dbo.CUOTA_PAGO
-        WHERE orden_pago_id = ${Number(r.orden_pago_id)}
-        ORDER BY numero_cuota ASC;
-      `);
+      const cuotasPago = allCuotas.filter(
+        (cp) => Number(cp.orden_pago_id) === Number(r.orden_pago_id),
+      );
       const metodoPago = 'MERCADO PAGO';
       out.push({
         id: `tesis-cust-${r.customer_id}`,
@@ -329,18 +349,23 @@ export class CustomersService {
   }
 
   async findAll(query?: { estadoServicio?: string; asesorId?: string }) {
-    const prismaCustomers = await this.prisma.customer.findMany({
-      where: query,
-      include: {
-        buyer: { include: { universidad: true, carrera: true } },
-        servicio: true,
-        asesor: true,
-        sesiones: { orderBy: { numeroSesion: 'asc' } },
-        cotizacion: true,
-        payer: { include: { primerPago: true } },
-      },
-      orderBy: { fechaInicioServicio: 'desc' },
-    });
+    let prismaCustomers: any[] = [];
+    try {
+      prismaCustomers = await this.prisma.customer.findMany({
+        where: query,
+        include: {
+          buyer: { include: { universidad: true, carrera: true } },
+          servicio: true,
+          asesor: true,
+          sesiones: { orderBy: { numeroSesion: 'asc' } },
+          cotizacion: true,
+          payer: { include: { primerPago: true } },
+        },
+        orderBy: { fechaInicioServicio: 'desc' },
+      });
+    } catch (e: any) {
+      this.logger.warn(`No se pudieron cargar customers de Prisma: ${e.message}`);
+    }
     const tesisCustomers = await this.obtenerTesisCustomers().catch((e) => {
       this.logger.warn(`No se pudieron cargar customers de INBESTIGA_TESIS: ${e.message}`);
       return [];
@@ -367,12 +392,14 @@ export class CustomersService {
       let progresoGlobal = 35;
       if (c.estadoServicio === 'FINALIZADO') {
         progresoGlobal = 100;
-      } else if (ultimaBitacora?.porcentajeAvance) {
-        progresoGlobal = ultimaBitacora.porcentajeAvance;
+      } else if (ultimaBitacora?.porcentajeAvance != null) {
+        progresoGlobal = this.toFiniteNumber(ultimaBitacora.porcentajeAvance, 35);
       }
 
       // Turnitin reportado más reciente
-      const turnitinPct = ultimaBitacora?.turnitinPct ?? (cBitacora.find((b) => b.turnitinPct != null)?.turnitinPct ?? 6);
+      const rawTurnitin =
+        ultimaBitacora?.turnitinPct ?? cBitacora.find((b) => b.turnitinPct != null)?.turnitinPct;
+      const turnitinPct = this.toFiniteNumber(rawTurnitin, 6);
 
       // Tema de tesis o trabajo de investigación
       const esBachiller = c.servicio?.tipoInvestigacion === 'TRABAJO_INVESTIGACION_BACHILLER' || c.buyer?.tipoInvestigacion?.includes('BACHILLER');
@@ -440,11 +467,16 @@ export class CustomersService {
     }
 
     const ultimaBitacora = bitacora[0] || null;
-    const progresoGlobal = customer.estadoServicio === 'FINALIZADO'
-      ? 100
-      : (ultimaBitacora?.porcentajeAvance || 45);
+    const progresoGlobal =
+      customer.estadoServicio === 'FINALIZADO'
+        ? 100
+        : ultimaBitacora?.porcentajeAvance != null
+          ? this.toFiniteNumber(ultimaBitacora.porcentajeAvance, 45)
+          : 45;
 
-    const turnitinPct = ultimaBitacora?.turnitinPct ?? (bitacora.find((b) => b.turnitinPct != null)?.turnitinPct ?? 6);
+    const rawTurnitinTraz =
+      ultimaBitacora?.turnitinPct ?? bitacora.find((b) => b.turnitinPct != null)?.turnitinPct;
+    const turnitinPct = this.toFiniteNumber(rawTurnitinTraz, 6);
 
     const esBachiller = customer.servicio?.tipoInvestigacion === 'TRABAJO_INVESTIGACION_BACHILLER' ||
       customer.buyer?.tipoInvestigacion?.includes('BACHILLER');
@@ -571,7 +603,10 @@ export class CustomersService {
         ultimaRevision: ultimaEntradaHito?.fechaRegistro || null,
         observacionAsesor: ultimaEntradaHito?.observaciones || null,
         registradoPor: ultimaEntradaHito?.registradoPor || customer.asesor ? `${customer.asesor?.gradoAcademico || 'Dr.'} ${customer.asesor?.nombres} ${customer.asesor?.apellidos}` : 'Asesor Metodológico',
-        turnitinPct: ultimaEntradaHito?.turnitinPct || null,
+        turnitinPct:
+          ultimaEntradaHito?.turnitinPct != null
+            ? this.toFiniteNumber(ultimaEntradaHito.turnitinPct, 0)
+            : null,
       };
     });
 
@@ -655,27 +690,11 @@ export class CustomersService {
       });
     }
 
-    let cuotaHabilitada: any = null;
-    if (data.estadoRevision === 'APROBADO' && customer.ordenPagoId) {
-      const pendienteHito = (customer.cuotasPago || []).find((cp: any) => cp.estado === 'ESPERA_HITO');
-      if (pendienteHito) {
-        cuotaHabilitada = await this.cuotasHitoService
-          .aprobarHito(Number(customer.ordenPagoId), Number(pendienteHito.numero_cuota))
-          .catch((e) => {
-            this.logger.warn(`No se pudo habilitar cuota tras bitácora: ${e.message}`);
-            return null;
-          });
-      }
-    }
-
     this.logger.log(`✓ Nueva anotación registrada en bitácora para tesista ${customer.buyer?.nombres} ${customer.buyer?.apellidos} (Hito: ${data.hito})`);
 
     return {
       exito: true,
-      mensaje: cuotaHabilitada
-        ? `Anotación registrada y Cuota #${cuotaHabilitada.cuota} (S/ ${Number(cuotaHabilitada.monto).toFixed(2)}) habilitada y notificada por Telegram.`
-        : 'Anotación registrada en bitácora con éxito.',
-      cuotaHabilitada,
+      mensaje: 'Anotación registrada en la bitácora académica con éxito.',
     };
   }
 

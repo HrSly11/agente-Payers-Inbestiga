@@ -1,7 +1,24 @@
-import { Controller, Get, Post, Param, Body } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Post,
+  Param,
+  Body,
+  UseInterceptors,
+  UploadedFile,
+  Sse,
+  MessageEvent,
+  Req,
+  Res,
+} from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiTags, ApiOperation } from '@nestjs/swagger';
+import type { Request, Response } from 'express';
+import { Observable } from 'rxjs';
+import * as fs from 'fs';
 import { PayersService } from './payers.service';
 import { CuotasHitoService } from './cuotas-hito.service';
+import { VOICE_UPLOAD_LIMITS, validarUploadVoz } from '../voice/voice-upload.helper';
 
 @ApiTags('Fase 3: PAYERS — Agente de Cobranza v2 & Reporte BI R-PAYERS')
 @Controller('payers')
@@ -31,6 +48,87 @@ export class PayersController {
   @ApiOperation({ summary: 'Ejecuta ahora el ciclo de recordatorios de cuotas exigibles y escalamiento de hitos vencidos' })
   async ejecutarRecordatorios() {
     return this.cuotasHitoService.procesarRecordatorios();
+  }
+
+  @Sse('events')
+  @ApiOperation({ summary: 'Stream SSE en tiempo real con eventos de nuevos mensajes de WhatsApp, Telegram y Live Chat' })
+  streamEvents(): Observable<MessageEvent> {
+    return this.payersService.getChatEventsStream();
+  }
+
+  @Get('mensajes/:mensajeId/audio')
+  @ApiOperation({ summary: 'Sirve el audio persistido asociado a un mensaje de nota de voz' })
+  getMensajeAudio(
+    @Param('mensajeId') mensajeId: string,
+    @Req() req: Request,
+    @Res() res: Response,
+  ) {
+    const file = this.payersService.obtenerAudioMensaje(Number(mensajeId));
+    const pipeStream = (stream: fs.ReadStream) => {
+      res.on('close', () => {
+        if (!stream.destroyed) stream.destroy();
+      });
+      stream.on('error', () => {
+        if (!res.headersSent) res.status(404).end();
+        else res.end();
+      });
+      stream.pipe(res);
+    };
+
+    const rawRange = Array.isArray(req.headers.range) ? req.headers.range[0] : req.headers.range;
+    const rangeMatch = typeof rawRange === 'string' ? /^bytes=(\d*)-(\d*)$/.exec(rawRange.trim()) : null;
+
+    if (rangeMatch) {
+      const [, startRaw, endRaw] = rangeMatch;
+      let start: number;
+      let end: number;
+
+      if (startRaw === '' && endRaw === '') {
+        res.status(416).set('Content-Range', `bytes */${file.size}`).end();
+        return;
+      } else if (startRaw === '') {
+        const suffixLength = Number(endRaw);
+        if (!Number.isFinite(suffixLength) || suffixLength <= 0 || file.size <= 0) {
+          res.status(416).set('Content-Range', `bytes */${file.size}`).end();
+          return;
+        }
+        start = Math.max(0, file.size - suffixLength);
+        end = file.size - 1;
+      } else {
+        start = Number(startRaw);
+        end = endRaw === '' ? file.size - 1 : Math.min(Number(endRaw), file.size - 1);
+      }
+
+      if (
+        file.size <= 0 ||
+        !Number.isInteger(start) ||
+        !Number.isInteger(end) ||
+        start < 0 ||
+        start >= file.size ||
+        end < start
+      ) {
+        res.status(416).set('Content-Range', `bytes */${file.size}`).end();
+        return;
+      }
+
+      res.status(206).set({
+        'Content-Type': file.mimeType,
+        'Content-Range': `bytes ${start}-${end}/${file.size}`,
+        'Content-Length': String(end - start + 1),
+        'Accept-Ranges': 'bytes',
+        'Cache-Control': 'public, max-age=3600',
+      });
+      pipeStream(fs.createReadStream(file.filePath, { start, end }));
+      return;
+    }
+
+    res.status(200).set({
+      'Content-Type': file.mimeType,
+      'Content-Length': String(file.size),
+      'Accept-Ranges': 'bytes',
+      'Cache-Control': 'public, max-age=3600',
+    });
+    pipeStream(fs.createReadStream(file.filePath));
   }
 
   @Get('overview')
@@ -64,6 +162,21 @@ export class PayersController {
     },
   ) {
     return this.payersService.procesarChatAgente(Number(body.ordenPagoId), body.mensaje || '');
+  }
+
+  @Post('agent/voice-chat')
+  @UseInterceptors(FileInterceptor('audio', VOICE_UPLOAD_LIMITS))
+  @ApiOperation({
+    summary:
+      'Procesa una nota de voz en el Agente IA de Cobranza PAYERS (STT -> Agente determinístico -> TTS)',
+  })
+  async procesarVoiceChat(
+    @Body() body: { ordenPagoId?: string | number; canal?: string },
+    @UploadedFile() file: { buffer: Buffer; originalname?: string; mimetype?: string } | undefined,
+  ) {
+    const { ordenPagoId, buffer, filename, mimeType } = validarUploadVoz(body?.ordenPagoId, file);
+    const canal = body?.canal === 'WHATSAPP' || body?.canal === 'TELEGRAM' ? body.canal : 'WEB';
+    return this.payersService.procesarAudioAgente(ordenPagoId, buffer, filename, mimeType, canal);
   }
 
   @Post('webhook/simular')

@@ -53,6 +53,8 @@ export class EvolutionProvider {
    * Acepta "949103345", "51949103345", "51949103345@s.whatsapp.net" o "+51 949 103 345".
    */
   private normalizarNumero(telefono: string): string {
+    // Los LID (identificadores opacos de WhatsApp) se envían tal cual, como JID completo
+    if (String(telefono).endsWith('@lid')) return String(telefono);
     let clean = String(telefono).split('@')[0].replace(/\D/g, '');
     clean = clean.replace(/^0+/, '');
     if (clean.length === 9 && clean.startsWith('9')) {
@@ -114,7 +116,7 @@ export class EvolutionProvider {
           enabled: true,
           url,
           byEvents: false,
-          base64: false,
+          base64: true,
           events: ['MESSAGES_UPSERT', 'CONNECTION_UPDATE', 'QRCODE_UPDATED'],
         },
       });
@@ -153,6 +155,65 @@ export class EvolutionProvider {
       const errMsg =
         error.response?.data?.message || error.response?.data?.response?.message || error.message;
       this.logger.error(`[Evolution] Falló el envío a ${number}: ${errMsg}`);
+      return { exito: false, messageId: `evo_fail_${Date.now()}`, detalles: { error: errMsg, number } };
+    }
+  }
+
+  /** Muestra "escribiendo…" / "grabando audio…" mientras el agente procesa (mejora la latencia percibida). */
+  async sendPresence(telefono: string, presence: 'composing' | 'recording'): Promise<void> {
+    if (!this.configured) return;
+    try {
+      await this.client.post(
+        `/chat/sendPresence/${this.instanceName}`,
+        { number: this.normalizarNumero(telefono), presence, delay: 25000 },
+        { timeout: 5000 },
+      );
+    } catch {
+      // Indicador cosmético: nunca debe romper el flujo
+    }
+  }
+
+  /**
+   * Descarga el contenido de un mensaje multimedia (audio) como Base64 puro.
+   * POST /chat/getBase64FromMediaMessage/{instance}
+   */
+  async getMediaBase64(messageKey: any): Promise<string | null> {
+    if (!this.configured) return null;
+    try {
+      const res = await this.client.post(`/chat/getBase64FromMediaMessage/${this.instanceName}`, {
+        message: { key: messageKey },
+        convertToMp4: false,
+      });
+      const b64: string | undefined = res.data?.base64;
+      return b64 ? b64.replace(/^data:[^;]+;base64,/, '') : null;
+    } catch (error: any) {
+      this.logger.error(
+        `[Evolution] getBase64FromMediaMessage falló: ${error.response?.data?.message || error.message}`,
+      );
+      return null;
+    }
+  }
+
+  /**
+   * Envía una nota de voz nativa (PTT). `audioBase64` debe ser Base64 puro (sin prefijo data:).
+   * POST /message/sendWhatsAppAudio/{instance}
+   */
+  async sendVoiceNote(telefono: string, audioBase64: string): Promise<SendMessageResult> {
+    const number = this.normalizarNumero(telefono);
+    if (!this.configured) {
+      return { exito: false, messageId: `evo_no_config_${Date.now()}`, detalles: { enviado: false, number } };
+    }
+    try {
+      const response = await this.client.post(
+        `/message/sendWhatsAppAudio/${this.instanceName}`,
+        { number, audio: audioBase64.replace(/^data:[^;]+;base64,/, ''), encoding: true },
+        { timeout: 60000 },
+      );
+      const messageId = response.data?.key?.id || response.data?.id || `evo_${Date.now()}`;
+      return { exito: true, messageId, detalles: response.data };
+    } catch (error: any) {
+      const errMsg = error.response?.data?.message || error.response?.data?.response?.message || error.message;
+      this.logger.error(`[Evolution] Falló el envío de nota de voz a ${number}: ${JSON.stringify(errMsg)}`);
       return { exito: false, messageId: `evo_fail_${Date.now()}`, detalles: { error: errMsg, number } };
     }
   }

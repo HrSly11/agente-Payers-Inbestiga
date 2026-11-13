@@ -58,8 +58,14 @@ export class PaymentsController {
 
   @Post('mercadopago/verificar')
   @ApiOperation({ summary: 'Verifica en Mercado Pago los pagos aprobados de una orden y los confirma en el sistema' })
-  async verificarPagoMercadoPago(@Body() body: { cotizacionId: string }) {
-    return this.paymentsService.verificarPagoMercadoPago(body.cotizacionId);
+  async verificarPagoMercadoPago(@Body() body: { cotizacionId: string; paymentId?: string }) {
+    return this.paymentsService.verificarPagoMercadoPago(body.cotizacionId, body.paymentId);
+  }
+
+  @Post('corregir-pago-42')
+  @ApiOperation({ summary: 'Concilia exactamente la operación MP 189364022174 de Cuota 1 de Harry' })
+  async corregirPago42() {
+    return this.paymentsService.corregirPagoOperacion42();
   }
 
   @Post('checkout/procesar')
