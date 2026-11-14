@@ -249,4 +249,33 @@ export class PayersController {
       body.etapa || '4h',
     );
   }
+
+  @Post('pagos/:pagoId/anular')
+  @ApiOperation({
+    summary:
+      'Anula un pago confirmado sujeto a la regla RN_11_PERMITIR_ANULACION_PAGO, revierte la cuota a EXIGIBLE y sincroniza el Data Mart',
+  })
+  async anularPago(
+    @Param('pagoId') pagoId: string,
+    @Body() body: { motivo?: string },
+  ) {
+    return this.payersService.anularPago(pagoId, body?.motivo);
+  }
+
+  @Post('ordenes/:ordenPagoId/cancelar-cuotas')
+  @ApiOperation({
+    summary:
+      'Cancela cuotas pendientes futuras de una orden sujeto a RN_12_CANCELAR_CUOTAS_PENDIENTES (sin revertir pagos confirmados), pausa alertas y sincroniza el Data Mart',
+  })
+  async cancelarCuotasPendientes(
+    @Param('ordenPagoId') ordenPagoId: string,
+    @Body() body: { cuotaId?: number; motivo?: string },
+  ) {
+    return this.payersService.cancelarCuotasPendientes(ordenPagoId, {
+      cuotaId: body?.cuotaId != null ? Number(body.cuotaId) : undefined,
+      motivo: body?.motivo,
+      origen: 'ADMIN',
+      actor: 'Administración / Caja',
+    });
+  }
 }

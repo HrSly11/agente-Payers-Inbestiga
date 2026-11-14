@@ -53,9 +53,11 @@ export class AgentConfigController {
 
     return this.prisma.configuracionAgente.create({
       data: {
-        proveedorIA: data.proveedorIA || 'GEMINI',
-        modelo: data.modelo || 'gemini-1.5-flash',
-        promptSistema: data.promptSistema || 'Eres el Asesor Especialista Comercial de INBESTIGA.TESIS.',
+        proveedorIA: data.proveedorIA || 'OPENAI',
+        modelo: data.modelo || 'gpt-4o-mini',
+        promptSistema:
+          data.promptSistema ||
+          'Eres el Asesor Virtual Especialista de Cobranza y Activación Académica de INBESTIGA.TESIS.',
         tono: data.tono || 'Profesional y resolutivo',
         estilo: data.estilo || 'Consultor académico',
         permitirNegociacion: data.permitirNegociacion ?? true,

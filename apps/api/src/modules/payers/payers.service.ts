@@ -13,6 +13,7 @@ import { PrismaService } from '../../database/prisma.service';
 import { MercadoPagoProvider } from '../payments/providers/mercadopago.provider';
 import { WhatsAppService } from '../whatsapp/whatsapp.service';
 import { OpenAiVoiceService } from '../voice/openai-voice.service';
+import { BusinessRulesService } from '../business-rules/business-rules.service';
 import { saveVoiceFile, findVoiceFile, listVoiceMessageIds } from '../voice/voice-storage.helper';
 import * as crypto from 'crypto';
 
@@ -35,9 +36,43 @@ export class PayersService {
     private readonly mercadoPagoProvider: MercadoPagoProvider,
     @Inject(forwardRef(() => WhatsAppService))
     private readonly whatsappService: WhatsAppService,
+    private readonly businessRulesService: BusinessRulesService,
     @Optional()
     private readonly voice?: OpenAiVoiceService,
   ) {}
+
+  private async getConfiguracionAgenteActiva() {
+    try {
+      const rows: any[] = await this.prisma.$queryRawUnsafe(`
+        SELECT TOP 1
+          proveedorIA,
+          modelo,
+          promptSistema,
+          tono,
+          estilo,
+          maxCuotasNegociables,
+          horarioInicio,
+          horarioFin
+        FROM [dbo].[CONFIGURACION_AGENTE]
+        WHERE activo = 1
+        ORDER BY fechaActualizacion DESC;
+      `);
+      if (rows[0]) return rows[0];
+    } catch (err: any) {
+      this.logger.warn(`No se pudo leer CONFIGURACION_AGENTE en vivo: ${err.message}`);
+    }
+    return {
+      proveedorIA: 'OPENAI',
+      modelo: 'gpt-4o-mini',
+      promptSistema:
+        'Eres el Asesor Virtual Especialista de Cobranza y Activación Académica de INBESTIGA.TESIS. Tu misión es acompañar cordialmente al estudiante que ya aceptó su cotización, guiarlo a completar su pago por los canales oficiales y acompañarlo hasta activar su asesoría.',
+      tono: 'Profesional, empático, financiero-académico y determinístico',
+      estilo: 'Especialista de Cobranza y Activación PAYERS v2.0',
+      maxCuotasNegociables: 6,
+      horarioInicio: '08:00',
+      horarioFin: '20:00',
+    };
+  }
 
   getChatEventsStream(): Observable<MessageEvent> {
     return this.chatEvents$.asObservable().pipe(map((data) => ({ data })));
@@ -148,23 +183,34 @@ export class PayersService {
     // Se toma el mayor entre el agregado analítico y la fuente transaccional para no subestimar
     // lo cobrado, pero sin contar vouchers POR_VERIFICAR como confirmados.
     const totalCobrado = Math.max(Number(orden.monto_cobrado || 0), totalCobradoConfirmado);
-    const saldoPendiente = Math.max(0, Number((totalComprometido - totalCobrado).toFixed(2)));
-    const ordenLiquidada = totalComprometido > 0 && saldoPendiente === 0;
 
-    const cuotasVigentes = (cuotas || []).filter(
+    const cuotasList = cuotas || [];
+    const cuotasVigentes = cuotasList.filter(
       (c) => c.estado !== 'PAGADA' && c.estado !== 'ANULADA',
     );
-    const ultimaCuota = (cuotas || [])[0];
+    const cuotasAnuladas = cuotasList.filter((c) => c.estado === 'ANULADA');
+    const montoAnulado = Number(
+      cuotasAnuladas.reduce((acc, c) => acc + Number(c.monto_programado || 0), 0).toFixed(2),
+    );
+    const ordenAnulada =
+      orden.estado === 'ANULADA' ||
+      (cuotasVigentes.length === 0 && cuotasAnuladas.length > 0);
+    const saldoPendiente = ordenAnulada
+      ? 0
+      : Math.max(0, Number((totalComprometido - totalCobrado - montoAnulado).toFixed(2)));
+    const ordenLiquidada =
+      !ordenAnulada &&
+      totalComprometido > 0 &&
+      Math.max(0, Number((totalComprometido - totalCobrado - montoAnulado).toFixed(2))) === 0;
+
+    const ultimaCuota = cuotasList[0];
     const cuotaExigible =
       cuotasVigentes.find((c) =>
         ['EXIGIBLE', 'ENLACE_ENVIADO', 'VENCIDA', 'POR_VERIFICAR'].includes(c.estado),
       ) ||
       cuotasVigentes.find((c) => c.estado !== 'ESPERA_HITO') ||
       cuotasVigentes[0] ||
-      // Sin cuota vigente: si aún queda saldo por cobrar, se presenta como saldo pendiente en
-      // lugar de reutilizar una cuota ya PAGADA/ANULADA como "exigible" (mensaje contradictorio).
-      // Se conserva `cuota_id`/`numero_cuota` originales por seguridad de las operaciones SQL.
-      (saldoPendiente > 0 && ultimaCuota
+      (!ordenAnulada && saldoPendiente > 0 && ultimaCuota
         ? {
             ...ultimaCuota,
             monto_programado: saldoPendiente,
@@ -174,24 +220,29 @@ export class PayersService {
         : ultimaCuota) || {
         cuota_id: Number(orden.orden_pago_id),
         numero_cuota: 1,
-        monto_programado: totalComprometido,
-        condicion: 'Pago único',
-        estado: 'EXIGIBLE',
+        monto_programado: ordenAnulada ? 0 : totalComprometido,
+        condicion: ordenAnulada ? 'Cuotas pendientes canceladas' : 'Pago único',
+        estado: ordenAnulada ? 'ANULADA' : 'EXIGIBLE',
       };
 
-    const esCuotaBloqueada = cuotaExigible.estado === 'ESPERA_HITO';
-    const montoCuotaExigible = Number(cuotaExigible.monto_programado || 0);
-    // Nunca solicitar más de lo que realmente se adeuda.
-    const montoCobrable = ordenLiquidada
-      ? 0
-      : Math.min(montoCuotaExigible, saldoPendiente || montoCuotaExigible);
+    const esCuotaBloqueada = !ordenAnulada && cuotaExigible.estado === 'ESPERA_HITO';
+    const montoCuotaExigible = ordenAnulada ? 0 : Number(cuotaExigible.monto_programado || 0);
+    // Nunca solicitar más de lo que realmente se adeuda ni si la orden fue anulada.
+    const montoCobrable =
+      ordenAnulada || ordenLiquidada
+        ? 0
+        : Math.min(montoCuotaExigible, saldoPendiente || montoCuotaExigible);
 
     return {
       totalComprometido,
       totalCobrado,
+      montoAnulado,
       saldoPendiente,
       ordenLiquidada,
+      ordenAnulada,
       pagosConfirmados,
+      cuotasVigentes,
+      cuotasAnuladas,
       cuotaExigible,
       esCuotaBloqueada,
       montoCuotaExigible,
@@ -859,10 +910,56 @@ export class PayersService {
       cuotasPorVerificar.length > 0 ||
       Number(orden.monto_cobrado) > 0;
 
+    // Leer reglas de negocio vigentes en tiempo real (SQL Server REGLA_NEGOCIO)
+    const antiPromptInjection = await this.businessRulesService.isReglaHabilitada('RN_01_PROMPT_INJECTION', true);
+    const topeYape = await this.businessRulesService.getValorNumerico('RN_05_TOPE_YAPE_PLIN_PEN', 500, 15000);
+    const linkVigenciaHoras = await this.businessRulesService.getValorNumerico('RN_09_EXPIRACION_LINK_PAGO_HRS', 72, 72);
+    const maxCuotasInicial = Math.max(1, Math.round(await this.businessRulesService.getValorNumerico('RN_03_MAX_CUOTAS_INICIAL', 3, 3)));
+    const maxCuotasReestruc = Math.max(1, Math.round(await this.businessRulesService.getValorNumerico('RN_03_MAX_CUOTAS_REESTRUCTURACION', 6, 6)));
+    const validarVoucherPorCaja = await this.businessRulesService.isReglaHabilitada('RN_06_VERIFICACION_VOUCHER_CAJA', true);
+    const permitirCancelarPendientes = await this.businessRulesService.isReglaHabilitada(
+      'RN_12_CANCELAR_CUOTAS_PENDIENTES',
+      false,
+    );
+    const permitirAnulacionPago = await this.businessRulesService.isReglaHabilitada(
+      'RN_11_PERMITIR_ANULACION_PAGO',
+      false,
+    );
+
+    const ultimosMensajesBot: any[] = await this.prisma.$queryRawUnsafe(`
+      SELECT TOP 1 contenido
+      FROM INBESTIGA_TESIS.dbo.MENSAJE
+      WHERE conversacion_id = ${conversacionId}
+        AND emisor = 'BOT'
+        AND mensaje_id < ${estudianteMensajeId || 2147483647}
+      ORDER BY mensaje_id DESC;
+    `);
+    const ultimoBotTexto = String(ultimosMensajesBot[0]?.contenido || '').toLowerCase();
+    const veniaDeConfirmacionCancelacion =
+      ultimoBotTexto.includes('cancela mis cuotas pendientes') ||
+      ultimoBotTexto.includes('cancelar ahora mismo tus cuotas pendientes');
+    const esConfirmacionAfirmativaCorta =
+      /^(s[ií](\b|[,.!])|ok\b|dale\b|procede|adelante|confirmo|hazlo|de acuerdo|claro|por favor)/i.test(
+        msgLower.trim(),
+      ) ||
+      /(s[ií],?\s*)?(canc[eé]lalas|an[uú]lalas|cancela mis cuotas|anula mis cuotas|cancela los siguientes pagos|confirmo cancelar)/i.test(
+        msgLower,
+      );
+    const mencionaPagoYaConfirmado =
+      /ya pagu[eé]|pago ya realizado|pago confirmado|boleta ya emitida|pago duplicado/i.test(msgLower) &&
+      !/pendient|siguiente|falta|futur/i.test(msgLower);
+    const consultaOCancelaCuotasPendientes =
+      !mencionaPagoYaConfirmado &&
+      (/((cancel|anul|desist|suspend|baja|dej[ae]r de pagar|no seguir pagando|no continuar).*(cuota|pago|pagos|pendiente|siguientes|orden|servicio))|((cuotas?|pagos?|lo que falta) (pendientes?|siguientes?|por pagar|restantes?).*(cancel|anul|no pag))|\bno deseo pagar\b|\bya no (voy a |quiero )?pagar\b/i.test(
+        msgLower,
+      ) ||
+        (veniaDeConfirmacionCancelacion && esConfirmacionAfirmativaCorta));
+
     // =========================================================================
     // REGLA 1: Guardarraíl Anti-Prompt-Injection (Sección 11.4 y RN-01/RN-02)
     // =========================================================================
     if (
+      antiPromptInjection &&
       /ignora.*(regla|instrucci)|system override|marca.*como pagad|aprueba mi pago|cambia.*precio_final|soy el administrador/i.test(
         msgLower,
       )
@@ -933,6 +1030,41 @@ export class PayersService {
       respuesta =
         `He verificado tu expediente (${orden.codigo_orden}) y detecté que tu paquete de traspaso figura con observaciones pendientes (${handoff?.detalle_incompleto || 'datos contractuales por completar'}).\n\n` +
         `Por seguridad de tu servicio, he derivado tu caso con prioridad a tu asesor para que complete tu ficha antes de habilitar el pago.`;
+    }
+    // =========================================================================
+    // REGLA 2.4: Orden Anulada (Cuotas pendientes canceladas por RN_12)
+    // =========================================================================
+    else if (
+      finanzas.ordenAnulada &&
+      !/reembolso|devoluci[oó]n|boleta|comprobante|anular.*confirmad|ya pagu[eé]|cronograma|mis cuotas|ver cuotas/i.test(
+        msgLower,
+      )
+    ) {
+      guardrailsActivados.push(
+        'RN_12: Orden con cuotas pendientes ANULADAS — saldo exigible S/ 0.00 sin enlaces ni recordatorios',
+      );
+      const toolAnulada = await this.logToolExecution(
+        conversacionId,
+        ordenPagoId,
+        'consultar_orden_pago',
+        { orden_pago_id: ordenPagoId, verificacion: 'ORDEN_ANULADA' },
+        {
+          codigo_orden: orden.codigo_orden,
+          estado_orden: orden.estado,
+          monto_abonado: finanzas.totalCobrado,
+          monto_cuotas_anuladas: finanzas.montoAnulado,
+          saldo_pendiente: 0,
+        },
+        55,
+      );
+      herramientasEjecutadas.push(toolAnulada);
+
+      respuesta =
+        `ℹ️ Tu orden **${orden.codigo_orden}** tiene sus cuotas pendientes **CANCELADAS / ANULADAS**.\n\n` +
+        `• **Total abonado conservado:** S/ ${finanzas.totalCobrado.toFixed(2)}\n` +
+        `• **Cuotas futuras canceladas:** S/ ${finanzas.montoAnulado.toFixed(2)} (\`ANULADA\`)\n` +
+        `• **Saldo pendiente exigible:** S/ 0.00\n\n` +
+        `No se emitirán enlaces de pago ni recordatorios adicionales. Si necesitas revisar tus boletas anteriores o consultar nuestra política de devoluciones, indícamelo.`;
     }
     // =========================================================================
     // REGLA 2.5: Cierre al Saldo 0 (Orden Totalmente Liquidada)
@@ -1032,13 +1164,13 @@ export class PayersService {
           : `2. Si deseas mantener el precio actual pero reducir el desembolso inicial hoy mismo, recuerda que puedo fraccionar tu orden en **3 cuotas (30/40/30)** o **6 cuotas por entregable** sin ningún recargo.`);
     }
     // =========================================================================
-    // REGLA 4: Pago con Yape o Plin -> Validación Tope S/ 500.00 (RN-05)
+    // REGLA 4: Pago con Yape o Plin -> Validación Tope dinámico (RN-05)
     // =========================================================================
     else if (/yape|plin/i.test(msgLower) && !/ya pagu[eé]|ya hice/i.test(msgLower)) {
       const billetera = /plin/i.test(msgLower) ? 'Plin' : 'Yape';
-      if (montoCuotaActual > 500) {
+      if (montoCuotaActual > topeYape) {
         guardrailsActivados.push(
-          `RN-05: Tope operativo ${billetera} (S/ 500.00) superado por cuota actual (S/ ${montoCuotaActual.toFixed(2)})`,
+          `RN-05: Tope operativo ${billetera} (S/ ${topeYape.toFixed(2)}) superado por cuota actual (S/ ${montoCuotaActual.toFixed(2)})`,
         );
 
         const polRows: any[] = await this.prisma.$queryRawUnsafe(
@@ -1051,9 +1183,9 @@ export class PayersService {
           'consultar_politica_cobranza',
           { tema: 'TOPE_YAPE', monto_cuota: montoCuotaActual },
           {
-            tope_maximo_soles: 500.0,
+            tope_maximo_soles: topeYape,
             excede_tope: true,
-            politica: polRows[0]?.contenido || 'Límite máximo S/ 500.00 por operación en Yape/Plin.',
+            politica: polRows[0]?.contenido || `Límite máximo S/ ${topeYape.toFixed(2)} por operación en Yape/Plin.`,
           },
           75,
         );
@@ -1071,7 +1203,7 @@ export class PayersService {
           INSERT INTO INBESTIGA_TESIS.dbo.ENLACE_PAGO (
             orden_pago_id, cuota_id, medio_pago_id, referencia_externa, url_enlace, monto, fecha_envio, fecha_expiracion, estado
           ) VALUES (
-            ${ordenPagoId}, ${Number(cuotaPendiente.cuota_id)}, 3, '${refLink}', '${urlLink}', ${montoCuotaActual}, GETDATE(), DATEADD(HOUR, 48, GETDATE()), 'ENVIADO'
+            ${ordenPagoId}, ${Number(cuotaPendiente.cuota_id)}, 3, '${refLink}', '${urlLink}', ${montoCuotaActual}, GETDATE(), DATEADD(HOUR, ${linkVigenciaHoras}, GETDATE()), 'ENVIADO'
           );
         `);
 
@@ -1100,22 +1232,22 @@ export class PayersService {
           INSERT INTO INBESTIGA_TESIS.dbo.OBJECION_PAGO (
             orden_pago_id, tipo, resumen, veces_repetida, resuelta, fecha_registro
           ) VALUES (
-            ${ordenPagoId}, 'TOPE_MEDIO', 'Intentó pagar S/ ${montoCuotaActual.toFixed(2)} con ${billetera}; se aplicó RN-05 (tope S/ 500).', 1, 1, GETDATE()
+            ${ordenPagoId}, 'TOPE_MEDIO', 'Intentó pagar S/ ${montoCuotaActual.toFixed(2)} con ${billetera}; se aplicó RN-05 (tope S/ ${topeYape.toFixed(2)}).', 1, 1, GETDATE()
           );
         `);
 
         respuesta =
           `• **Aviso sobre el límite de transacción en ${billetera}:**\n` +
-          `Tu cuota exigible #${cuotaPendiente.numero_cuota} es de **S/ ${montoCuotaActual.toFixed(2)}**, y por políticas de seguridad de las billeteras móviles en pasarela el límite máximo por operación en **Yape / Plin es de S/ 500.00**.\n\n` +
+          `Tu cuota exigible #${cuotaPendiente.numero_cuota} es de **S/ ${montoCuotaActual.toFixed(2)}**, y por políticas de seguridad de las billeteras móviles en pasarela el límite máximo por operación en **Yape / Plin es de S/ ${topeYape.toFixed(2)}**.\n\n` +
           `Para completar tu pago ahora mismo tienes **3 alternativas oficiales**:\n` +
           `1. **Enlace Checkout con Tarjeta Débito/Crédito (hasta S/ 15,000):** ${urlLink}\n` +
           `2. **Transferencia Bancaria BCP / Interbank (0% comisión):** Cta. Corriente Soles BCP **570-2489103-0-12** | CCI **00257000248910301235** (INBESTIGA SAC) y me envías la captura del voucher por aquí.\n` +
           (tienePlanIniciado
             ? `3. **Solicitar reestructuración de tu cuota pendiente** con el Administrador de Caja para adaptarla a ${billetera}. ¿Cuál prefieres?`
-            : `3. **Fraccionar en 6 cuotas por entregable** para que tu cuota inicial baje a **S/ ${(Number(orden.monto_comprometido) * 0.2).toFixed(2)}** (≤ S/ 500.00 y apta para ${billetera}). ¿Cuál prefieres?`);
+            : `3. **Fraccionar en ${maxCuotasReestruc} cuotas por entregable** para que tu cuota inicial sea más accesible. ¿Cuál prefieres?`);
       } else {
         guardrailsActivados.push(
-          `RN-05: Monto S/ ${montoCuotaActual.toFixed(2)} validado dentro del límite operativo de ${billetera} (≤ S/ 500.00)`,
+          `RN-05: Monto S/ ${montoCuotaActual.toFixed(2)} validado dentro del límite operativo de ${billetera} (≤ S/ ${topeYape.toFixed(2)})`,
         );
         const medioId = billetera === 'Plin' ? 2 : 1;
         const refLink = `lnk_${billetera.toLowerCase()}_${ordenPagoId}_${Date.now().toString().slice(-5)}`;
@@ -1131,7 +1263,7 @@ export class PayersService {
           INSERT INTO INBESTIGA_TESIS.dbo.ENLACE_PAGO (
             orden_pago_id, cuota_id, medio_pago_id, referencia_externa, url_enlace, monto, fecha_envio, fecha_expiracion, estado
           ) VALUES (
-            ${ordenPagoId}, ${Number(cuotaPendiente.cuota_id)}, ${medioId}, '${refLink}', '${urlLink}', ${montoCuotaActual}, GETDATE(), DATEADD(HOUR, 48, GETDATE()), 'ENVIADO'
+            ${ordenPagoId}, ${Number(cuotaPendiente.cuota_id)}, ${medioId}, '${refLink}', '${urlLink}', ${montoCuotaActual}, GETDATE(), DATEADD(HOUR, ${linkVigenciaHoras}, GETDATE()), 'ENVIADO'
           );
         `);
 
@@ -1155,7 +1287,7 @@ export class PayersService {
         herramientasEjecutadas.push(toolLink);
 
         respuesta =
-          `• **Enlace directo de pago generado:** Como tu cuota #${cuotaPendiente.numero_cuota} es de **S/ ${montoCuotaActual.toFixed(2)}** (dentro del límite de S/ 500.00 de ${billetera}), he generado tu enlace directo:\n\n` +
+          `• **Enlace directo de pago generado:** Como tu cuota #${cuotaPendiente.numero_cuota} es de **S/ ${montoCuotaActual.toFixed(2)}** (dentro del límite de S/ ${topeYape.toFixed(2)} de ${billetera}), he generado tu enlace directo:\n\n` +
           `• **Enlace Oficial ${billetera} (Mercado Pago):** ${urlLink}\n` +
           `• **Orden:** ${orden.codigo_orden} (${orden.servicio_nombre})\n` +
           `• **Monto:** S/ ${montoCuotaActual.toFixed(2)}\n\n` +
@@ -1454,7 +1586,8 @@ export class PayersService {
     // =========================================================================
     else if (
       /cronograma|mis cuotas|ver cuotas|consultar.*cuotas|fechas? de pago|cu[aá]ndo vence/i.test(msgLower) &&
-      !/cambiar|reestructurar|3 cuotas|tres cuotas|6 cuotas|seis cuotas|en partes|fraccionar/i.test(msgLower)
+      !/cambiar|reestructurar|3 cuotas|tres cuotas|6 cuotas|seis cuotas|en partes|fraccionar/i.test(msgLower) &&
+      !consultaOCancelaCuotasPendientes
     ) {
       guardrailsActivados.push('Consulta determinística de cronograma de cuotas y calendario de pagos');
       const todasCuotas: any[] = await this.prisma.$queryRawUnsafe(`
@@ -1488,11 +1621,21 @@ export class PayersService {
         `• **Modalidad pactada:** ${orden.modalidad_condicion}\n` +
         `• **Total comprometido:** S/ ${finanzas.totalComprometido.toFixed(2)}\n` +
         `• **Monto abonado:** S/ ${finanzas.totalCobrado.toFixed(2)}\n` +
+        (finanzas.montoAnulado > 0
+          ? `• **Cuotas futuras canceladas (RN_12):** S/ ${finanzas.montoAnulado.toFixed(2)}\n`
+          : '') +
         `• **Saldo pendiente:** S/ ${saldo.toFixed(2)}\n\n` +
         `📋 **Desglose de Cuotas:**\n`;
 
       for (const c of todasCuotas) {
-        const icon = c.estado === 'PAGADA' ? '✅' : c.estado === 'ENLACE_ENVIADO' ? '🟡' : '⏳';
+        const icon =
+          c.estado === 'PAGADA'
+            ? '✅'
+            : c.estado === 'ANULADA'
+              ? '🚫'
+              : c.estado === 'ENLACE_ENVIADO'
+                ? '🟡'
+                : '⏳';
         const fechaStr = c.fecha_vencimiento
           ? new Date(c.fecha_vencimiento).toISOString().split('T')[0]
           : 'Contra entrega de hito académico';
@@ -1500,14 +1643,16 @@ export class PayersService {
         cronoText += `   └ Vence: ${fechaStr} | Condición: ${c.condicion || 'Entrega verificable'}\n`;
       }
 
-      if (orden.modalidad_condicion.includes('1 pago') && Number(orden.monto_cobrado) === 0) {
+      if (orden.modalidad_condicion.includes('1 pago') && Number(orden.monto_cobrado) === 0 && !finanzas.ordenAnulada) {
         cronoText += `\n💡 **Opciones de Flexibilidad Financiera:**\nActualmente tu orden está configurada en **1 pago al contado**. Si prefieres pagar en cuotas por hitos verificables antes de iniciar tu asesoría, solo dime **"cambiar a 3 cuotas"** o **"en 6 cuotas"** y actualizaré tu cronograma inmediatamente.`;
       }
 
-      if (enlaceActivo && !finanzas.esCuotaBloqueada && finanzas.saldoPendiente > 0) {
+      if (enlaceActivo && !finanzas.ordenAnulada && !finanzas.esCuotaBloqueada && finanzas.saldoPendiente > 0) {
         cronoText += `\n\n💳 **Enlace oficial de pago de tu cuota exigible:** ${enlaceActivo.url_enlace}`;
       } else if (finanzas.esCuotaBloqueada) {
         cronoText += `\n\n⏳ Tu siguiente cuota (#${cuotaPendiente.numero_cuota}) está en \`ESPERA_HITO\`: se habilitará para pago en cuanto tu asesor apruebe el hito académico correspondiente.`;
+      } else if (finanzas.ordenAnulada) {
+        cronoText += `\n\nℹ️ Las cuotas pendientes de esta orden fueron **CANCELADAS/ANULADAS**. No existen cobros pendientes ni enlaces activos.`;
       }
 
       respuesta = cronoText;
@@ -1551,33 +1696,74 @@ export class PayersService {
         const totalOrden = Number(orden.monto_comprometido);
         const saldoPendiente = finanzas.saldoPendiente;
 
+        const limiteMaxCuotas = tienePlanIniciado ? maxCuotasReestruc : maxCuotasReestruc;
         let nuevaModalidadId = 2; // 3 cuotas por defecto
         let totalCuotasObjetivo = 3;
         let descripcionModalidad = '3 cuotas 30/40/30';
         let porcentajes = [30, 40, 30];
 
-        if (/6 cuotas|seis cuotas/i.test(msgLower)) {
-          nuevaModalidadId = 3;
-          totalCuotasObjetivo = 6;
-          descripcionModalidad = '6 cuotas (inicial + hitos)';
-          porcentajes = [20, 16, 16, 16, 16, 16];
-        } else if (/2 cuotas|dos cuotas|dividir.*en 2/i.test(msgLower)) {
-          nuevaModalidadId = 4;
-          totalCuotasObjetivo = cuotasPagadasCount > 0 ? cuotasPagadasCount + 2 : 2;
-          const montoPorCuota = saldoPendiente > 0 ? (saldoPendiente / 2).toFixed(2) : (totalOrden / 2).toFixed(2);
-          descripcionModalidad = `${totalCuotasObjetivo} cuotas (${cuotasPagadasCount > 0 ? `reestructurado en 2 cuotas pendientes de S/ ${montoPorCuota}` : '2 cuotas 50/50'})`;
-          porcentajes = cuotasPagadasCount > 0 ? [20, 30, 25, 25] : [50, 50];
-        } else if (/contado|1 pago/i.test(msgLower)) {
+        const wordCuotasMap: Record<string, number> = { dos: 2, tres: 3, cuatro: 4, cinco: 5, seis: 6, siete: 7, ocho: 8 };
+        const numMatch = msgLower.match(/(\d+)\s*cuotas?/);
+        const wordMatch = msgLower.match(/(dos|tres|cuatro|cinco|seis|siete|ocho)\s*cuotas?/);
+        const dividEnMatch = msgLower.match(/dividir.*en\s*(\d+|dos|tres|cuatro|cinco|seis|siete|ocho)/);
+        let cuotasSolicitadas: number | null = null;
+        if (numMatch) cuotasSolicitadas = Number(numMatch[1]);
+        else if (wordMatch) cuotasSolicitadas = wordCuotasMap[wordMatch[1]] ?? null;
+        else if (dividEnMatch) cuotasSolicitadas = Number(dividEnMatch[1]) || wordCuotasMap[dividEnMatch[1]] || null;
+
+        if (/contado|1 pago/i.test(msgLower)) {
           nuevaModalidadId = 1;
           totalCuotasObjetivo = 1;
           descripcionModalidad = '1 pago (100%)';
           porcentajes = [100];
+        } else if (cuotasSolicitadas && cuotasSolicitadas > 1) {
+          if (cuotasSolicitadas > limiteMaxCuotas) {
+            respuesta =
+              `ℹ️ Según la regla vigente (**RN_03_MAX_CUOTAS_REESTRUCTURACION = ${limiteMaxCuotas}**), el tope máximo permitido es de **${limiteMaxCuotas} cuotas**. Podemos fraccionar tu saldo pendiente (**S/ ${saldoPendiente.toFixed(2)}**) en hasta **${limiteMaxCuotas} cuotas** por entregable sin variar el monto total.`;
+            totalCuotasObjetivo = -1;
+          } else if (cuotasPagadasCount > 0) {
+            // Reestructuración de saldo pendiente en exactamente N cuotas restantes
+            totalCuotasObjetivo = cuotasPagadasCount + cuotasSolicitadas;
+            nuevaModalidadId = totalCuotasObjetivo >= 5 ? 3 : totalCuotasObjetivo === 4 ? 4 : 2;
+            const montoPorCuota = saldoPendiente > 0 ? (saldoPendiente / cuotasSolicitadas).toFixed(2) : (totalOrden / cuotasSolicitadas).toFixed(2);
+            descripcionModalidad = `${totalCuotasObjetivo} cuotas (reestructurado en ${cuotasSolicitadas} cuotas pendientes de S/ ${montoPorCuota})`;
+            const pctEach = Number((100 / totalCuotasObjetivo).toFixed(1));
+            porcentajes = Array(totalCuotasObjetivo).fill(pctEach);
+          } else {
+            totalCuotasObjetivo = cuotasSolicitadas;
+            if (cuotasSolicitadas === 3) {
+              nuevaModalidadId = 2;
+              descripcionModalidad = '3 cuotas 30/40/30';
+              porcentajes = [30, 40, 30];
+            } else if (cuotasSolicitadas === 6) {
+              nuevaModalidadId = 3;
+              descripcionModalidad = '6 cuotas (inicial + hitos)';
+              porcentajes = [20, 16, 16, 16, 16, 16];
+            } else {
+              nuevaModalidadId = cuotasSolicitadas >= 5 ? 3 : 2;
+              const pctBase = Math.floor(100 / cuotasSolicitadas);
+              porcentajes = Array.from({ length: cuotasSolicitadas }, (_, idx) =>
+                idx === cuotasSolicitadas - 1 ? 100 - pctBase * (cuotasSolicitadas - 1) : pctBase,
+              );
+              descripcionModalidad = `${cuotasSolicitadas} cuotas (${porcentajes.join('/')})`;
+            }
+          }
+        } else if (cuotasPagadasCount > 0 && /dividir|menos cuotas|reestructur|ajustar/i.test(msgLower)) {
+          totalCuotasObjetivo = cuotasPagadasCount + 2;
+          nuevaModalidadId = totalCuotasObjetivo === 4 ? 4 : 3;
+          const montoPorCuota = saldoPendiente > 0 ? (saldoPendiente / 2).toFixed(2) : (totalOrden / 2).toFixed(2);
+          descripcionModalidad = `${totalCuotasObjetivo} cuotas (reestructurado en 2 cuotas pendientes de S/ ${montoPorCuota})`;
+          porcentajes = [20, 30, 25, 25];
         }
 
-        // Validación: si el usuario ya pagó igual o más cuotas de las que solicita en total
-        if (cuotasPagadasCount >= totalCuotasObjetivo && totalCuotasObjetivo > 1) {
+        // Validación: si superó tope dinámico RN_03 o ya pagó igual/más cuotas que el objetivo
+        if (totalCuotasObjetivo === -1) {
+          guardrailsActivados.push(
+            `RN_03_MAX_CUOTAS_REESTRUCTURACION (${limiteMaxCuotas}): solicitud de ${cuotasSolicitadas} cuotas excede el tope configurado`,
+          );
+        } else if (cuotasPagadasCount >= totalCuotasObjetivo && totalCuotasObjetivo > 1) {
           respuesta =
-            `ℹ️ Tu orden **${orden.codigo_orden}** ya registra **${cuotasPagadasCount} cuota(s) pagada(s)** (S/ ${Number(orden.monto_cobrado).toFixed(2)} abonado). No es posible pasar a un plan de ${totalCuotasObjetivo} cuotas porque ya alcanzaste esa cantidad. Si deseas fraccionar tu saldo pendiente de **S/ ${saldoPendiente.toFixed(2)}**, podemos pasarlo a **6 cuotas** por entregables.`;
+            `ℹ️ Tu orden **${orden.codigo_orden}** ya registra **${cuotasPagadasCount} cuota(s) pagada(s)** (S/ ${Number(orden.monto_cobrado).toFixed(2)} abonado). No es posible pasar a un plan de ${totalCuotasObjetivo} cuotas porque ya alcanzaste esa cantidad. Si deseas fraccionar tu saldo pendiente de **S/ ${saldoPendiente.toFixed(2)}**, podemos pasarlo a **${limiteMaxCuotas} cuotas** por entregables.`;
         } else {
           guardrailsActivados.push(
             `RN-03: ${cuotasPagadasCount > 0 ? 'Reestructuración de saldo pendiente' : 'Reconfiguración de modalidad'} a "${descripcionModalidad}" manteniendo intacto el monto comprometido (S/ ${totalOrden.toFixed(2)})`,
@@ -1769,6 +1955,134 @@ export class PayersService {
         `👤 **Responsable de Pago Actualizado:**\n` +
         `He registrado a **${tipoResp}** como responsable de pago de tu orden **${orden.codigo_orden}**.\n\n` +
         `Puedes reenviarle directamente el enlace de pago por **S/ ${montoCuotaActual.toFixed(2)}** (${urlEnlaceResponsable}) o los datos de cuenta corriente corporativa BCP **570-2489103-0-12** (INBESTIGA SAC).`;
+    }
+    // =========================================================================
+    // REGLA 9.5: Consulta o Cancelación de Cuotas Pendientes (RN_12)
+    //            Distingue cuotas futuras pendientes (RN_12) de reversa contable de pagos confirmados (RN_11)
+    // =========================================================================
+    else if (consultaOCancelaCuotasPendientes) {
+      const cuotasCancelables = cuotas.filter((c) =>
+        ['EXIGIBLE', 'ESPERA_HITO', 'ENLACE_ENVIADO', 'VENCIDA'].includes(c.estado),
+      );
+      const montoCancelable = cuotasCancelables.reduce(
+        (acc, c) => acc + Number(c.monto_programado || 0),
+        0,
+      );
+
+      const esEjecucionDirecta =
+        (veniaDeConfirmacionCancelacion && esConfirmacionAfirmativaCorta) ||
+        (/(confirmo|procede|adelante|hazlo|canc[eé]lalas|an[uú]lalas|cancela (las|mis|los|todas) (cuotas|pagos)|anula (las|mis|los|todas) (cuotas|pagos))/i.test(
+          msgLower,
+        ) &&
+          !/una pregunta|\bse pueden?\b|\bse podr[ií]a\b|\bes posible\b|\bpuedo cancelar\b|\bquiero saber\b/i.test(
+            msgLower,
+          ));
+
+      if (!permitirCancelarPendientes) {
+        guardrailsActivados.push(
+          'RN_12_CANCELAR_CUOTAS_PENDIENTES deshabilitada: cancelación automática de cuotas futuras bloqueada por regla vigente',
+        );
+        const toolCheck = await this.logToolExecution(
+          conversacionId,
+          ordenPagoId,
+          'consultar_reglas_negocio',
+          { codigo: 'RN_12_CANCELAR_CUOTAS_PENDIENTES', orden_pago_id: ordenPagoId },
+          { permitirCancelarPendientes: false, cuotasPendientes: cuotasCancelables.length },
+          60,
+        );
+        herramientasEjecutadas.push(toolCheck);
+
+        respuesta =
+          `ℹ️ Actualmente la cancelación automática de cuotas pendientes está **deshabilitada** según nuestras reglas vigentes (\`RN_12_CANCELAR_CUOTAS_PENDIENTES\`).\n\n` +
+          `La anulación contable permitida solo aplica a cargos ya confirmados revisados por Caja (\`RN_11\`). Si deseas evaluar una baja excepcional de tus **${cuotasCancelables.length} cuota(s) pendiente(s)** (S/ ${montoCancelable.toFixed(2)}), comunícate con Coordinación Académica o Caja.`;
+      } else if (cuotasCancelables.length === 0) {
+        guardrailsActivados.push(
+          'RN_12_CANCELAR_CUOTAS_PENDIENTES: sin cuotas futuras pendientes por anular',
+        );
+        const toolCheck = await this.logToolExecution(
+          conversacionId,
+          ordenPagoId,
+          'consultar_orden_pago',
+          { orden_pago_id: ordenPagoId, motivo: 'VERIFICAR_CUOTAS_CANCELABLES' },
+          { cuotasPendientes: 0, totalAbonado: finanzas.totalCobrado },
+          55,
+        );
+        herramientasEjecutadas.push(toolCheck);
+
+        respuesta =
+          `ℹ️ Tu orden **${orden.codigo_orden}** no tiene cuotas pendientes por cancelar en este momento (total abonado confirmado: **S/ ${finanzas.totalCobrado.toFixed(2)}**).`;
+      } else if (esEjecucionDirecta) {
+        guardrailsActivados.push(
+          `RN_12_CANCELAR_CUOTAS_PENDIENTES activa: anulando ${cuotasCancelables.length} cuota(s) pendiente(s) por desistimiento del estudiante`,
+        );
+        const resultadoCancelacion = await this.cancelarCuotasPendientes(ordenPagoId, {
+          motivo: `Solicitud directa vía chat: ${rawTrimmedMsg.slice(0, 180)}`,
+          origen: 'ESTUDIANTE',
+          actor: orden.estudiante_nombre,
+        });
+        const toolCancel = await this.logToolExecution(
+          conversacionId,
+          ordenPagoId,
+          'cancelar_cuotas_pendientes',
+          { orden_pago_id: ordenPagoId, regla: 'RN_12_CANCELAR_CUOTAS_PENDIENTES' },
+          {
+            cuotas_anuladas: resultadoCancelacion.cuotasCanceladas.map((c: any) => c.numero_cuota),
+            monto_anulado: resultadoCancelacion.montoCancelado,
+            monto_abonado_conservado: resultadoCancelacion.montoPagadoConservado,
+            nuevo_estado_orden: resultadoCancelacion.nuevoEstadoOrden,
+          },
+          115,
+        );
+        herramientasEjecutadas.push(toolCancel);
+
+        const listadoCanceladas = resultadoCancelacion.cuotasCanceladas
+          .map((c: any) => `Cuota #${c.numero_cuota} (S/ ${Number(c.monto_programado).toFixed(2)})`)
+          .join(', ');
+
+        respuesta =
+          `✅ **Cuotas pendientes canceladas — Orden ${orden.codigo_orden}:**\n\n` +
+          `Conforme a nuestra regla vigente (\`RN_12_CANCELAR_CUOTAS_PENDIENTES\`), he procedido con la cancelación de tus **pagos pendientes futuros**:\n` +
+          `• **Cuotas anuladas:** ${listadoCanceladas} — Total: **S/ ${resultadoCancelacion.montoCancelado.toFixed(2)}** (\`ANULADA\`)\n` +
+          `• **Pagos ya confirmados conservados:** S/ ${resultadoCancelacion.montoPagadoConservado.toFixed(2)}\n` +
+          `• **Saldo pendiente actual:** **S/ 0.00**\n\n` +
+          `Se han desactivado los enlaces de pago y recordatorios automáticos de esta orden.`;
+      } else {
+        guardrailsActivados.push(
+          'RN_12_CANCELAR_CUOTAS_PENDIENTES activa: informando cuotas pendientes anulables y solicitando confirmación expresa',
+        );
+        const toolPreview = await this.logToolExecution(
+          conversacionId,
+          ordenPagoId,
+          'consultar_orden_pago',
+          { orden_pago_id: ordenPagoId, verificacion: 'CUOTAS_CANCELABLES_RN_12' },
+          {
+            regla_activa: 'RN_12_CANCELAR_CUOTAS_PENDIENTES',
+            cuotas_cancelables: cuotasCancelables.map((c) => ({
+              numero_cuota: c.numero_cuota,
+              monto: Number(c.monto_programado),
+              estado: c.estado,
+            })),
+            monto_pendiente_cancelable: montoCancelable,
+            monto_abonado_confirmado: finanzas.totalCobrado,
+          },
+          70,
+        );
+        herramientasEjecutadas.push(toolPreview);
+
+        const detalleCuotasPendientes = cuotasCancelables
+          .map(
+            (c) =>
+              `• **Cuota #${c.numero_cuota}:** S/ ${Number(c.monto_programado).toFixed(2)} (\`${c.estado}\`)`,
+          )
+          .join('\n');
+
+        respuesta =
+          `Sí, **se pueden cancelar tus cuotas pendientes futuras** de la orden **${orden.codigo_orden}** conforme a nuestra regla vigente (\`RN_12_CANCELAR_CUOTAS_PENDIENTES\`) sin afectar tus pagos ya confirmados (**S/ ${finanzas.totalCobrado.toFixed(2)}** abonado).\n\n` +
+          `📋 **Cuotas pendientes por cancelar (Total: S/ ${montoCancelable.toFixed(2)}):**\n` +
+          `${detalleCuotasPendientes}\n\n` +
+          `*(Nota: la anulación contable \`RN_11\` aplica solo para revertir pagos ya confirmados en Caja; esta opción \`RN_12\` anula únicamente los siguientes pagos pendientes).*` +
+          `\n\nSi deseas que cancele ahora mismo tus cuotas pendientes y detenga todos los enlaces y recordatorios, respóndeme **"Sí, cancela mis cuotas pendientes"** y lo ejecuto de inmediato.`;
+      }
     }
     // =========================================================================
     // REGLA 10: Pausa de Cobranza / No Contactar (RN-07 / RN-08)
@@ -2020,7 +2334,7 @@ export class PayersService {
             : `ℹ️ **Nota de pago:** Tu orden registra un saldo pendiente de **S/ ${saldoPendiente.toFixed(2)}** en tu cuota #${cuotaPendiente.numero_cuota} (\`${cuotaPendiente.estado}\`). Enlace oficial de Mercado Pago: ${await this.urlPagoVigente(orden, montoCuotaActual, enlaceActivo)}`);
     }
     // =========================================================================
-    // FLUJO CONVERSACIONAL INTELIGENTE (Google Gemini + Contexto Transaccional)
+    // FLUJO CONVERSACIONAL INTELIGENTE (Configuración DB + Reglas en Vivo + LLM)
     // =========================================================================
     else {
       const totalComprometido = finanzas.totalComprometido;
@@ -2029,11 +2343,26 @@ export class PayersService {
       const estaPagada = finanzas.ordenLiquidada;
       const asesorReal = orden.asesor_nombre || 'Dr. Carlos Alberto Méndez Vargas';
 
-      // 1. Invocar OpenAI gpt-4o-mini (o fallback a Google Gemini) con el contexto en vivo de la base de datos
+      const configAgente = await this.getConfiguracionAgenteActiva();
+      const reglasActivasTexto = await this.businessRulesService.formatReglasActivasParaAgente();
+      const proveedorPrimario = String(configAgente?.proveedorIA || 'OPENAI').toUpperCase();
+      const modeloConfigurado = String(configAgente?.modelo || '').trim();
+      const promptBaseConfig = String(configAgente?.promptSistema || '').trim() ||
+        'Eres el Asesor Virtual Especialista de Cobranza y Activación Académica de INBESTIGA.TESIS.';
+
+      // 1. Invocar OpenAI gpt-4o-mini (primario PAYERS) con fallback automático a Google Gemini (o viceversa según CONFIGURACION_AGENTE)
       let respuestaIA: string | null = null;
       let motorIA = '';
       const apiKeyGemini = process.env.GEMINI_API_KEY;
-      const modeloGemini = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+      const modeloGemini =
+        proveedorPrimario === 'GEMINI' && modeloConfigurado.toLowerCase().startsWith('gemini')
+          ? modeloConfigurado
+          : process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+      const modeloOpenAi =
+        proveedorPrimario === 'OPENAI' && modeloConfigurado
+          ? modeloConfigurado
+          : 'gpt-4o-mini';
+
       const urlEnlace = await this.urlPagoVigente(orden, montoCuotaActual, enlaceActivo);
       const puedeCobrar = !finanzas.esCuotaBloqueada && saldoPendiente > 0;
       const enlaceParaCliente = puedeCobrar ? urlEnlace : '(NO APLICA: no hay cuota exigible en este momento)';
@@ -2041,62 +2370,70 @@ export class PayersService {
       const primerNombre = (orden.estudiante_nombre || 'estudiante').split(' ')[0];
 
       const contextPrompt =
-        `Eres el Agente Virtual Oficial de Cobranza y Activación de INBESTIGA (institución de asesoría de tesis).\n` +
-        `OBJETIVO CRÍTICO EN FASE PAYERS:\n` +
-        `El estudiante YA aceptó la cotización y su orden está emitida (${orden.codigo_orden}). NO estamos en la fase LEADS ni en consultoría diagnóstica. Tu único objetivo es guiarlo a concretar el pago de su cuota para activar su servicio con su asesor (${asesorReal}), resolviendo dudas del enlace de pago o proponiendo facilidades oficiales de pago.\n\n` +
+        `${promptBaseConfig}\n` +
+        `Tono conversacional: ${configAgente?.tono || 'Profesional, empático y determinístico'}\n\n` +
+        `CONTEXTO DE FASE PAYERS:\n` +
+        `El estudiante YA aceptó la cotización y su orden está emitida (${orden.codigo_orden}). NO estamos en la fase LEADS ni en consultoría diagnóstica. Tu objetivo es guiarlo a concretar el pago de su cuota para activar su servicio con su asesor (${asesorReal}), resolver sus dudas sobre reglas/medios/enlaces y proponer facilidades vigentes.\n\n` +
+        `REGLAS DE NEGOCIO VIGENTES EN TIEMPO REAL (SQL SERVER - INBESTIGA_TESIS.dbo.REGLA_NEGOCIO):\n` +
+        `${reglasActivasTexto}\n` +
+        `IMPORTANTE: Debes aplicar y respetar TODAS las reglas de negocio activas listadas arriba desde este mismo instante, incluyendo cualquier regla creada o editada recientemente por el administrador.\n\n` +
         `Datos del estudiante en vivo desde SQL Server:\n` +
         `- Estudiante: ${orden.estudiante_nombre} (llámalo ${primerNombre})\n` +
         `- Código de Orden: ${orden.codigo_orden}\n` +
         `- Servicio: ${orden.servicio_nombre}\n` +
         `- Estado de la Orden: ${orden.estado}\n` +
+        `- Estado Anulada (RN_12): ${finanzas.ordenAnulada ? 'SÍ (cuotas pendientes canceladas, saldo exigible S/ 0.00)' : 'NO'}\n` +
         `- Total comprometido: S/ ${totalComprometido.toFixed(2)}\n` +
         `- Total pagado a la fecha: S/ ${totalCobrado.toFixed(2)}\n` +
+        `- Cuotas anuladas: S/ ${finanzas.montoAnulado.toFixed(2)}\n` +
         `- Saldo pendiente real: S/ ${saldoPendiente.toFixed(2)}\n` +
+        `- Permiso anular pago confirmado en Caja (RN_11): ${permitirAnulacionPago ? 'ACTIVO' : 'DESHABILITADO'}\n` +
+        `- Permiso cancelar cuotas pendientes (RN_12): ${permitirCancelarPendientes ? 'ACTIVO' : 'DESHABILITADO'}\n` +
         `- Modalidad actual: ${orden.modalidad_condicion}\n` +
-        `- Plan de pagos ya iniciado: ${tienePlanIniciado ? `SÍ (registra S/ ${totalCobrado.toFixed(2)} abonado; el saldo pendiente de S/ ${saldoPendiente.toFixed(2)} SÍ se puede reestructurar en hasta 6 cuotas por entregable)` : 'NO (orden virgen sin pagos; se puede fraccionar en 3 o 6 cuotas antes de iniciar)'}\n` +
+        `- Plan de pagos ya iniciado: ${tienePlanIniciado ? `SÍ (registra S/ ${totalCobrado.toFixed(2)} abonado; el saldo pendiente de S/ ${saldoPendiente.toFixed(2)} se puede reestructurar hasta en ${maxCuotasReestruc} cuotas por entregable)` : `NO (orden virgen sin pagos; se puede fraccionar en ${maxCuotasInicial} o hasta ${maxCuotasReestruc} cuotas antes de iniciar)`}\n` +
         `- Cuota exigible (#${cuotaPendiente.numero_cuota}): S/ ${finanzas.montoCuotaExigible.toFixed(2)} (Estado: ${cuotaPendiente.estado}, Vence: ${cuotaPendiente.fecha_vencimiento ? String(cuotaPendiente.fecha_vencimiento).slice(0, 10) : 'según hito'})\n` +
+        `- Tope vigente Yape/Plin: S/ ${topeYape.toFixed(2)}\n` +
         `- Asesor Metodológico Asignado: ${asesorReal}\n` +
         `- Pasarela Oficial: Mercado Pago (Checkout Pro)\n` +
         `- Enlace Oficial de Pago Mercado Pago: ${enlaceParaCliente}\n\n` +
-        `REGLAS ESTRICTAS DE RESPUESTA (OBLIGATORIAS):\n` +
-        `1. SALUDO INICIAL EN FASE PAYERS:\n` +
+        `INSTRUCCIONES DE FORMATO Y SEGURIDAD DE RESPUESTA:\n` +
+        `1. Si es saludo inicial o conversación general:\n` +
         (tienePlanIniciado
-          ? `   - Salúdalo con calidez por su primer nombre ("¡Hola ${primerNombre}!"), preséntate como su asesor de activación de Inbestiga, recuérdale que su orden ${orden.codigo_orden} ya tiene su plan de pagos en curso (registra S/ ${totalCobrado.toFixed(2)} abonado) y pregúntale amablemente si tuvo alguna dificultad con el enlace de pago para su siguiente cuota (#${cuotaPendiente.numero_cuota}, S/ ${finanzas.montoCuotaExigible.toFixed(2)}) o si desea que reestructuremos su saldo pendiente en cuotas más accesibles.\n`
-          : `   - Salúdalo con calidez por su primer nombre ("¡Hola ${primerNombre}!"), preséntate como su asesor de activación de Inbestiga, explícale cordialmente que su orden ${orden.codigo_orden} está lista para activarse con su asesor y pregúntale si tuvo alguna duda con el enlace de pago o si desea revisar facilidades de pago (como fraccionar en 3 o 6 cuotas por entregables o pagar con tarjeta/transferencia).\n`) +
-        `   - PROHIBIDO decir "¿en qué te puedo ayudar con tu tesis?" o hacer preguntas abiertas de consultoría académica (eso es de la fase LEADS).\n` +
-        `2. Si el saldo pendiente es S/ 0.00, confirma que la orden está 100% CANCELADA, el servicio está ACTIVO y NO solicites ningún pago ni menciones enlaces.\n` +
-        `3. Si el saldo pendiente es mayor a 0 (S/ ${saldoPendiente.toFixed(2)}) pero la cuota actual está en ESPERA_HITO, explica que esa cuota se habilita apenas el asesor (${asesorReal}) apruebe el hito académico correspondiente y NO proporciones enlace de pago.\n` +
-        `4. FACILIDADES Y PAGOS:\n` +
-        (tienePlanIniciado
-          ? `   - Si consulta por facilidades o fraccionar cuotas: explícale amablemente que podemos reestructurar su saldo pendiente de S/ ${saldoPendiente.toFixed(2)} en hasta 6 cuotas por entregable para reducir el importe de su cuota actual, manteniendo íntegras las cuotas que ya pagó. Si el estudiante dice "pásame a 6 cuotas" o "fracciónalo", infórmale que el sistema lo ajusta de inmediato.\n`
-          : `   - Ofrece las facilidades oficiales: fraccionar en 3 cuotas (30/40/30) o en 6 cuotas por entregables aprobados para reducir el desembolso inicial, o abonar mediante Mercado Pago (tarjeta en cuotas), Yape/Plin (hasta S/ 500) o transferencia BCP/Interbank.\n`) +
-        `   - Proporciona EXACTAMENTE este enlace oficial de Mercado Pago: ${enlaceParaCliente}. PROHIBIDO mencionar "Culqi" o "Fase 4: CUSTOMERS".\n` +
-        `5. Responde en tono profesional, empático, directo y conciso (máximo 2 párrafos en texto, o máximo 35 palabras si es por nota de voz), en texto plano sin Markdown apto para lectura en voz alta.\n` +
-        `6. Pregunta o mensaje exacto del estudiante: "${mensaje}"`;
+          ? `   - Salúdalo con calidez por su primer nombre ("¡Hola ${primerNombre}!"), preséntate como su asesor de activación de Inbestiga, recuérdale que su orden ${orden.codigo_orden} ya tiene su plan de pagos en curso (registra S/ ${totalCobrado.toFixed(2)} abonado) y pregúntale amablemente si necesita ayuda con su siguiente cuota (#${cuotaPendiente.numero_cuota}, S/ ${finanzas.montoCuotaExigible.toFixed(2)}) o alguna facilidad vigente.\n`
+          : `   - Salúdalo con calidez por su primer nombre ("¡Hola ${primerNombre}!"), preséntate como su asesor de activación de Inbestiga, explícale cordialmente que su orden ${orden.codigo_orden} está lista para activarse con su asesor y pregúntale si tuvo alguna duda con el enlace de pago o si desea revisar facilidades de pago.\n`) +
+        `   - PROHIBIDO decir "¿en qué te puedo ayudar con tu tesis?" o hacer preguntas abiertas de consultoría académica.\n` +
+        `2. Si el saldo pendiente es S/ 0.00 (ya sea 100% pagada o cuotas anuladas), NO solicites pagos ni menciones enlaces.\n` +
+        `3. Si la cuota actual está en ESPERA_HITO, explica que se habilita cuando su asesor (${asesorReal}) apruebe el hito académico y NO proporciones enlace de pago.\n` +
+        `4. Si consulta sobre una política o regla de negocio vigente, respóndele usando el valor y descripción exacta de las reglas activas arriba y DISTINGUE SIEMPRE entre RN_11 (anulación contable en Caja de un pago ya confirmado) y RN_12 (cancelación de cuotas pendientes futuras cuando el tesista desiste).\n` +
+        `5. Cuando corresponda enviar enlace de pago, proporciona EXACTAMENTE este enlace oficial de Mercado Pago: ${enlaceParaCliente}. PROHIBIDO mencionar "Culqi".\n` +
+        `6. Responde en tono natural y conciso (máximo 2 párrafos en texto, o máximo 35 palabras si es por nota de voz), en texto plano sin Markdown.\n` +
+        `7. Pregunta o mensaje exacto del estudiante: "${mensaje}"`;
 
-      // 1.1 Prioridad: OpenAI gpt-4o-mini con max_tokens=250 y memoria de 6 turnos
-      if (this.voice?.enabled) {
+      const invocarOpenAI = async (): Promise<boolean> => {
+        if (!this.voice?.enabled) return false;
         try {
           const resOpenAi = await this.voice.generarRespuestaPayers(
             `orden:${ordenPagoId}`,
             contextPrompt,
             mensaje,
-            { voz: opts?.voz },
+            { voz: opts?.voz, model: modeloOpenAi },
           );
           if (resOpenAi) {
             respuestaIA = resOpenAi.replace(
               /ENLACE(_|\s*)DE(_|\s*)PAGO(\s*AQU[IÍ])?/gi,
               puedeCobrar ? urlEnlace : '(no hay cuota exigible en este momento)',
             );
-            motorIA = 'OpenAI (gpt-4o-mini)';
+            motorIA = `OpenAI (${modeloOpenAi})`;
+            return true;
           }
         } catch (e: any) {
-          this.logger.warn(`OpenAI gpt-4o-mini fallback a Gemini: ${e.message}`);
+          this.logger.warn(`OpenAI (${modeloOpenAi}) error -> activando fallback: ${e.message}`);
         }
-      }
+        return false;
+      };
 
-      // 1.2 Fallback: Google Gemini
-      if (!respuestaIA && apiKeyGemini && apiKeyGemini.length > 10) {
+      const invocarGemini = async (): Promise<boolean> => {
+        if (!apiKeyGemini || apiKeyGemini.length <= 10) return false;
         try {
           // eslint-disable-next-line @typescript-eslint/no-var-requires
           const axios = require('axios');
@@ -2115,10 +2452,21 @@ export class PayersService {
             );
             respuestaIA = textoG;
             motorIA = `Google Gemini (${modeloGemini})`;
+            return true;
           }
         } catch (e: any) {
-          this.logger.warn(`Gemini fallback: ${e.message}`);
+          this.logger.warn(`Gemini (${modeloGemini}) error -> activando fallback: ${e.message}`);
         }
+        return false;
+      };
+
+      if (proveedorPrimario === 'GEMINI') {
+        const okGemini = await invocarGemini();
+        if (!okGemini) await invocarOpenAI();
+      } else {
+        // Predeterminado PAYERS: OpenAI primario + Google Gemini fallback automático
+        const okOpenAi = await invocarOpenAI();
+        if (!okOpenAi) await invocarGemini();
       }
 
       if (respuestaIA) {
@@ -2334,9 +2682,10 @@ export class PayersService {
     }
 
     const monto = Number(cuotaObjetivo.monto_programado);
-    // Si pide Yape/Plin pero supera S/ 500, usar Tarjeta (RN-05)
-    let medioNombre: 'Yape' | 'Plin' | 'Tarjeta' = medioPagoInput || (monto <= 500 ? 'Yape' : 'Tarjeta');
-    if ((medioNombre === 'Yape' || medioNombre === 'Plin') && monto > 500) {
+    const topeYape = await this.businessRulesService.getValorNumerico('RN_05_TOPE_YAPE_PLIN_PEN', 500, 15000);
+    // Si pide Yape/Plin pero supera el tope vigente (RN_05), usar Tarjeta
+    let medioNombre: 'Yape' | 'Plin' | 'Tarjeta' = medioPagoInput || (monto <= topeYape ? 'Yape' : 'Tarjeta');
+    if ((medioNombre === 'Yape' || medioNombre === 'Plin') && monto > topeYape) {
       medioNombre = 'Tarjeta';
     }
 
@@ -3082,6 +3431,345 @@ export class PayersService {
       telegramChatId: ord.telegram_chat_id,
       mensajeEnviado: textoTelegram,
       timestamp: new Date().toISOString(),
+    };
+  }
+
+  /**
+   * POST /api/v1/payers/pagos/:pagoId/anular
+   * Anula un pago confirmado sujeto en tiempo real a RN_11_PERMITIR_ANULACION_PAGO,
+   * revierte la cuota a EXIGIBLE, recalcula ORDEN_PAGO y resincroniza INBESTIGA_MART.
+   */
+  async anularPago(pagoIdRaw: string | number, motivo?: string) {
+    const permitirAnulacion = await this.businessRulesService.isReglaHabilitada(
+      'RN_11_PERMITIR_ANULACION_PAGO',
+      false,
+    );
+    if (!permitirAnulacion) {
+      throw new BadRequestException(
+        'Operación bloqueada por regla de negocio vigente (RN_11_PERMITIR_ANULACION_PAGO): la anulación de pagos está deshabilitada actualmente.',
+      );
+    }
+
+    const pagoId = Number(String(pagoIdRaw).replace('tesis-pago-', '').trim());
+    if (!Number.isInteger(pagoId) || pagoId <= 0) {
+      throw new BadRequestException('Identificador de pago inválido para anulación.');
+    }
+
+    const pagoRows: any[] = await this.prisma.$queryRawUnsafe(`
+      SELECT TOP 1
+        pg.pago_id,
+        pg.orden_pago_id,
+        pg.cuota_id,
+        pg.monto_pagado,
+        pg.referencia,
+        pg.estado,
+        op.codigo_orden,
+        op.monto_comprometido,
+        cp.numero_cuota
+      FROM INBESTIGA_TESIS.dbo.PAGO pg
+      INNER JOIN INBESTIGA_TESIS.dbo.ORDEN_PAGO op ON op.orden_pago_id = pg.orden_pago_id
+      LEFT JOIN INBESTIGA_TESIS.dbo.CUOTA_PAGO cp ON cp.cuota_id = pg.cuota_id
+      WHERE pg.pago_id = ${pagoId};
+    `);
+
+    const pago = pagoRows[0];
+    if (!pago) {
+      throw new NotFoundException(`No se encontró el pago #${pagoId} en INBESTIGA_TESIS.dbo.PAGO.`);
+    }
+    if (pago.estado === 'ANULADO') {
+      throw new BadRequestException(`El pago #${pagoId} ya se encuentra ANULADO.`);
+    }
+    if (pago.estado !== 'CONFIRMADO' && pago.estado !== 'POR_VERIFICAR') {
+      throw new BadRequestException(
+        `Solo se pueden anular pagos CONFIRMADO o POR_VERIFICAR (estado actual: ${pago.estado}).`,
+      );
+    }
+
+    const ordenPagoId = Number(pago.orden_pago_id);
+    const cuotaId = pago.cuota_id != null ? Number(pago.cuota_id) : null;
+    const cleanMotivo = (motivo || 'Anulación manual autorizada por administración / Caja')
+      .trim()
+      .slice(0, 300)
+      .replace(/'/g, "''");
+
+    await this.prisma.$executeRawUnsafe(`
+      UPDATE INBESTIGA_TESIS.dbo.PAGO
+      SET estado = 'ANULADO'
+      WHERE pago_id = ${pagoId};
+    `);
+
+    if (cuotaId) {
+      await this.prisma.$executeRawUnsafe(`
+        UPDATE INBESTIGA_TESIS.dbo.CUOTA_PAGO
+        SET estado = 'EXIGIBLE'
+        WHERE cuota_id = ${cuotaId} AND estado IN ('PAGADA', 'POR_VERIFICAR');
+
+        UPDATE INBESTIGA_TESIS.dbo.ENLACE_PAGO
+        SET estado = 'EXPIRADO'
+        WHERE cuota_id = ${cuotaId} AND estado = 'PAGADO';
+      `);
+    }
+
+    await this.prisma.$executeRawUnsafe(`
+      UPDATE INBESTIGA_TESIS.dbo.VOUCHER
+      SET estado = 'RECHAZADO',
+          motivo_rechazo = N'Pago anulado: ${cleanMotivo}',
+          fecha_verificacion = GETDATE()
+      WHERE pago_id = ${pagoId};
+    `);
+
+    const resumenRows: any[] = await this.prisma.$queryRawUnsafe(`
+      SELECT
+        ISNULL((SELECT SUM(monto_pagado) FROM INBESTIGA_TESIS.dbo.PAGO WHERE orden_pago_id = ${ordenPagoId} AND estado = 'CONFIRMADO'), 0) AS total_pagado,
+        ISNULL((SELECT COUNT(*) FROM INBESTIGA_TESIS.dbo.ENLACE_PAGO WHERE orden_pago_id = ${ordenPagoId} AND estado = 'ENVIADO'), 0) AS enlaces_enviados
+    `);
+    const totalPagado = Number(resumenRows[0]?.total_pagado || 0);
+    const enlacesEnviados = Number(resumenRows[0]?.enlaces_enviados || 0);
+    const montoComprometido = Number(pago.monto_comprometido || 0);
+
+    const nuevoEstadoOrden =
+      totalPagado >= montoComprometido && montoComprometido > 0
+        ? 'PAGADA'
+        : totalPagado > 0
+          ? 'PARCIAL'
+          : enlacesEnviados > 0
+            ? 'ENLACE_ENVIADO'
+            : 'PENDIENTE';
+
+    await this.prisma.$executeRawUnsafe(`
+      UPDATE INBESTIGA_TESIS.dbo.ORDEN_PAGO
+      SET estado = '${nuevoEstadoOrden}'
+      WHERE orden_pago_id = ${ordenPagoId};
+    `);
+
+    await this.logAuditoria(
+      'ADMIN',
+      'Administración / Caja',
+      'ANULAR_PAGO',
+      'PAGO',
+      String(pagoId),
+      `Pago #${pagoId} (${pago.referencia || 'SIN-REF'}, S/ ${Number(pago.monto_pagado).toFixed(2)}) de orden ${pago.codigo_orden} ANULADO según RN_11_PERMITIR_ANULACION_PAGO. Motivo: ${cleanMotivo}. Estado orden -> ${nuevoEstadoOrden}`,
+    );
+
+    await this.sincronizarDataMart(`anular pago #${pagoId}`);
+
+    this.chatEvents$.next({
+      type: 'pago_anulado',
+      ordenPagoId,
+      pagoId,
+      nuevoEstadoOrden,
+      timestamp: new Date().toISOString(),
+    });
+
+    const estadoOrden = await this.getOrdenDetalle(ordenPagoId);
+    return {
+      exito: true,
+      mensaje: `Pago #${pagoId} (S/ ${Number(pago.monto_pagado).toFixed(2)}) de la orden ${pago.codigo_orden} anulado correctamente. Cuota revertida a EXIGIBLE y Data Mart actualizado.`,
+      pagoId,
+      ordenPagoId,
+      nuevoEstadoOrden,
+      estadoOrden,
+    };
+  }
+
+  private async sincronizarDataMart(contexto: string) {
+    try {
+      await this.prisma.$executeRawUnsafe(`EXEC INBESTIGA_MART.dbo.sp_etl_sync_inbestiga_mart;`);
+    } catch (e: any) {
+      this.logger.warn(`Error sincronizando Data Mart tras ${contexto}: ${e.message}`);
+    }
+  }
+
+  /**
+   * POST /api/v1/payers/ordenes/:ordenPagoId/cancelar-cuotas
+   * Cancela una o todas las cuotas pendientes futuras (EXIGIBLE, ESPERA_HITO, ENLACE_ENVIADO, VENCIDA)
+   * sujeto en tiempo real a RN_12_CANCELAR_CUOTAS_PENDIENTES, sin alterar pagos confirmados (RN_11).
+   */
+  async cancelarCuotasPendientes(
+    ordenPagoIdRaw: string | number,
+    opts?: {
+      cuotaId?: number;
+      motivo?: string;
+      origen?: 'ADMIN' | 'ESTUDIANTE';
+      actor?: string;
+    },
+  ) {
+    const permitirCancelar = await this.businessRulesService.isReglaHabilitada(
+      'RN_12_CANCELAR_CUOTAS_PENDIENTES',
+      false,
+    );
+    if (!permitirCancelar) {
+      throw new BadRequestException(
+        'Operación bloqueada por regla de negocio vigente (RN_12_CANCELAR_CUOTAS_PENDIENTES): la cancelación de cuotas pendientes está deshabilitada actualmente.',
+      );
+    }
+
+    const ordenPagoId = Number(ordenPagoIdRaw);
+    if (!Number.isInteger(ordenPagoId) || ordenPagoId <= 0) {
+      throw new BadRequestException('Identificador de orden de pago inválido.');
+    }
+
+    const ordRows: any[] = await this.prisma.$queryRawUnsafe(`
+      SELECT TOP 1
+        op.orden_pago_id,
+        op.codigo_orden,
+        op.estado,
+        op.monto_comprometido,
+        b.contacto_id
+      FROM INBESTIGA_TESIS.dbo.ORDEN_PAGO op
+      INNER JOIN INBESTIGA_TESIS.dbo.PROPUESTA pr ON pr.propuesta_id = op.propuesta_id
+      INNER JOIN INBESTIGA_TESIS.dbo.LEAD l ON l.lead_id = pr.lead_id
+      INNER JOIN INBESTIGA_TESIS.dbo.BUYER b ON b.buyer_id = l.buyer_id
+      WHERE op.orden_pago_id = ${ordenPagoId};
+    `);
+    const orden = ordRows[0];
+    if (!orden) {
+      throw new NotFoundException(`No se encontró la orden de pago #${ordenPagoId}.`);
+    }
+
+    const cuotasRows: any[] = await this.prisma.$queryRawUnsafe(`
+      SELECT cuota_id, numero_cuota, monto_programado, condicion, estado
+      FROM INBESTIGA_TESIS.dbo.CUOTA_PAGO
+      WHERE orden_pago_id = ${ordenPagoId}
+      ORDER BY numero_cuota ASC;
+    `);
+
+    const filtroCuotaId = opts?.cuotaId != null ? Number(opts.cuotaId) : null;
+    if (filtroCuotaId !== null) {
+      const target = cuotasRows.find((c) => Number(c.cuota_id) === filtroCuotaId);
+      if (!target) {
+        throw new NotFoundException(`La cuota #${filtroCuotaId} no pertenece a la orden ${orden.codigo_orden}.`);
+      }
+      if (target.estado === 'PAGADA') {
+        throw new BadRequestException(
+          `La cuota #${target.numero_cuota} ya está PAGADA; para revertir un cobro confirmado utiliza anulación de pago (RN_11).`,
+        );
+      }
+      if (target.estado === 'POR_VERIFICAR') {
+        throw new BadRequestException(
+          `La cuota #${target.numero_cuota} tiene un voucher POR_VERIFICAR en Caja; concílialo o recházalo antes de cancelar.`,
+        );
+      }
+      if (target.estado === 'ANULADA') {
+        throw new BadRequestException(`La cuota #${target.numero_cuota} ya se encuentra ANULADA.`);
+      }
+    }
+
+    const cuotasACancelar = cuotasRows.filter((c) => {
+      if (filtroCuotaId !== null && Number(c.cuota_id) !== filtroCuotaId) return false;
+      return ['EXIGIBLE', 'ESPERA_HITO', 'ENLACE_ENVIADO', 'VENCIDA'].includes(c.estado);
+    });
+
+    if (cuotasACancelar.length === 0) {
+      throw new BadRequestException(
+        `No hay cuotas pendientes cancelables en la orden ${orden.codigo_orden}.`,
+      );
+    }
+
+    const cuotaIdsSql = cuotasACancelar.map((c) => Number(c.cuota_id)).join(', ');
+    const cleanMotivo = (
+      opts?.motivo || 'Cancelación de cuotas pendientes autorizada conforme a RN_12_CANCELAR_CUOTAS_PENDIENTES'
+    )
+      .trim()
+      .slice(0, 300)
+      .replace(/'/g, "''");
+
+    await this.prisma.$executeRawUnsafe(`
+      UPDATE INBESTIGA_TESIS.dbo.CUOTA_PAGO
+      SET estado = 'ANULADA'
+      WHERE cuota_id IN (${cuotaIdsSql});
+
+      UPDATE INBESTIGA_TESIS.dbo.ENLACE_PAGO
+      SET estado = 'EXPIRADO'
+      WHERE orden_pago_id = ${ordenPagoId}
+        AND estado IN ('PENDIENTE', 'ENVIADO')
+        AND (cuota_id IS NULL OR cuota_id IN (${cuotaIdsSql}));
+
+      UPDATE INBESTIGA_TESIS.dbo.ALERTA_COBRANZA
+      SET resultado = 'PAUSADO',
+          motivo_pausa = N'${cleanMotivo}'
+      WHERE orden_pago_id = ${ordenPagoId}
+        AND resultado = 'ENVIADO'
+        AND (cuota_id IS NULL OR cuota_id IN (${cuotaIdsSql}));
+    `);
+
+    const estadoResumenRows: any[] = await this.prisma.$queryRawUnsafe(`
+      SELECT
+        ISNULL((SELECT COUNT(*) FROM INBESTIGA_TESIS.dbo.CUOTA_PAGO WHERE orden_pago_id = ${ordenPagoId} AND estado NOT IN ('PAGADA', 'ANULADA')), 0) AS cuotas_restantes,
+        ISNULL((SELECT SUM(monto_pagado) FROM INBESTIGA_TESIS.dbo.PAGO WHERE orden_pago_id = ${ordenPagoId} AND estado = 'CONFIRMADO'), 0) AS total_pagado,
+        ISNULL((SELECT COUNT(*) FROM INBESTIGA_TESIS.dbo.ENLACE_PAGO WHERE orden_pago_id = ${ordenPagoId} AND estado = 'ENVIADO'), 0) AS enlaces_enviados
+    `);
+    const cuotasRestantes = Number(estadoResumenRows[0]?.cuotas_restantes || 0);
+    const totalPagadoConfirmado = Number(estadoResumenRows[0]?.total_pagado || 0);
+    const enlacesEnviados = Number(estadoResumenRows[0]?.enlaces_enviados || 0);
+
+    let nuevoEstadoOrden = String(orden.estado);
+    if (cuotasRestantes === 0) {
+      nuevoEstadoOrden = 'ANULADA';
+      await this.prisma.$executeRawUnsafe(`
+        UPDATE INBESTIGA_TESIS.dbo.ORDEN_PAGO
+        SET estado = 'ANULADA'
+        WHERE orden_pago_id = ${ordenPagoId};
+
+        UPDATE INBESTIGA_TESIS.dbo.ENLACE_PAGO
+        SET estado = 'EXPIRADO'
+        WHERE orden_pago_id = ${ordenPagoId} AND estado IN ('PENDIENTE', 'ENVIADO');
+
+        UPDATE INBESTIGA_TESIS.dbo.ALERTA_COBRANZA
+        SET resultado = 'PAUSADO', motivo_pausa = N'${cleanMotivo}'
+        WHERE orden_pago_id = ${ordenPagoId} AND resultado = 'ENVIADO';
+      `);
+    } else {
+      nuevoEstadoOrden =
+        totalPagadoConfirmado > 0 ? 'PARCIAL' : enlacesEnviados > 0 ? 'ENLACE_ENVIADO' : 'PENDIENTE';
+      await this.prisma.$executeRawUnsafe(`
+        UPDATE INBESTIGA_TESIS.dbo.ORDEN_PAGO
+        SET estado = '${nuevoEstadoOrden}'
+        WHERE orden_pago_id = ${ordenPagoId};
+      `);
+    }
+
+    const montoCancelado = Number(
+      cuotasACancelar.reduce((acc, c) => acc + Number(c.monto_programado || 0), 0).toFixed(2),
+    );
+    const numerosCancelados = cuotasACancelar.map((c) => `#${c.numero_cuota}`).join(', ');
+
+    await this.logAuditoria(
+      opts?.origen || 'ADMIN',
+      opts?.actor || 'Administración / Caja',
+      'CANCELAR_CUOTAS_PENDIENTES',
+      'ORDEN_PAGO',
+      String(ordenPagoId),
+      `Cuotas ${numerosCancelados} (S/ ${montoCancelado.toFixed(2)}) de orden ${orden.codigo_orden} ANULADAS según RN_12_CANCELAR_CUOTAS_PENDIENTES. Abonado conservado: S/ ${totalPagadoConfirmado.toFixed(2)}. Motivo: ${cleanMotivo}. Estado orden -> ${nuevoEstadoOrden}`,
+    );
+
+    await this.sincronizarDataMart(`cancelar cuotas de orden #${ordenPagoId}`);
+
+    this.chatEvents$.next({
+      type: 'cuotas_canceladas',
+      ordenPagoId,
+      nuevoEstadoOrden,
+      cuotasCanceladas: cuotasACancelar.map((c) => Number(c.numero_cuota)),
+      montoCancelado,
+      timestamp: new Date().toISOString(),
+    });
+
+    const estadoOrden = await this.getOrdenDetalle(ordenPagoId);
+    return {
+      exito: true,
+      mensaje: `Cuotas pendientes (${numerosCancelados}) de la orden ${orden.codigo_orden} canceladas por S/ ${montoCancelado.toFixed(2)}. Pagos confirmados conservados: S/ ${totalPagadoConfirmado.toFixed(2)}.`,
+      ordenPagoId,
+      nuevoEstadoOrden,
+      cuotasCanceladas: cuotasACancelar.map((c) => ({
+        cuota_id: Number(c.cuota_id),
+        numero_cuota: Number(c.numero_cuota),
+        monto_programado: Number(c.monto_programado),
+        estado_anterior: c.estado,
+        estado_nuevo: 'ANULADA',
+      })),
+      montoCancelado,
+      montoPagadoConservado: totalPagadoConfirmado,
+      estadoOrden,
     };
   }
 }

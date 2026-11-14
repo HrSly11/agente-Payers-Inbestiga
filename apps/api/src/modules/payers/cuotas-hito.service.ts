@@ -127,7 +127,8 @@ export class CuotasHitoService implements OnApplicationBootstrap {
   private async cuotasConContacto(where: string): Promise<any[]> {
     return this.prisma.$queryRawUnsafe(`
       SELECT cp.cuota_id, cp.orden_pago_id, cp.numero_cuota, cp.monto_programado, cp.condicion, cp.estado,
-             cp.fecha_vencimiento, op.codigo_orden, c.nombres, c.email, c.telefono, c.telegram_chat_id,
+             cp.fecha_vencimiento, op.codigo_orden, op.estado AS orden_estado,
+             c.nombres, c.email, c.telefono, c.telegram_chat_id,
              DATEDIFF(DAY, CAST(GETDATE() AS DATE), cp.fecha_vencimiento) AS dias_para_vencer
       FROM INBESTIGA_TESIS.dbo.CUOTA_PAGO cp
       INNER JOIN INBESTIGA_TESIS.dbo.ORDEN_PAGO op ON op.orden_pago_id = cp.orden_pago_id
@@ -210,6 +211,9 @@ export class CuotasHitoService implements OnApplicationBootstrap {
     );
     if (!rows.length) throw new NotFoundException(`Cuota ${numeroCuota} de la orden ${ordenPagoId} no encontrada.`);
     const cuota = rows[0];
+    if (cuota.orden_estado === 'ANULADA') {
+      throw new BadRequestException(`La orden ${cuota.codigo_orden} fue ANULADA y no permite habilitar cuotas.`);
+    }
     if (cuota.estado !== 'ESPERA_HITO') {
       throw new BadRequestException(`La cuota ${numeroCuota} está en estado ${cuota.estado}; solo se habilita desde ESPERA_HITO.`);
     }
@@ -278,7 +282,7 @@ export class CuotasHitoService implements OnApplicationBootstrap {
     const resumen = { recordatorios: 0, vencimientoProximo: 0, escaladosVencidas: 0, hitosVencidosSinAprobar: 0 };
 
     const cobrables = await this.cuotasConContacto(
-      `cp.estado IN ('EXIGIBLE', 'ENLACE_ENVIADO', 'VENCIDA') AND cp.numero_cuota > 1`,
+      `cp.estado IN ('EXIGIBLE', 'ENLACE_ENVIADO', 'VENCIDA') AND cp.numero_cuota > 1 AND op.estado <> 'ANULADA' AND ISNULL(c.no_contactar, 0) = 0`,
     );
     for (const c of cobrables) {
       const cuotaId = Number(c.cuota_id);
@@ -309,7 +313,9 @@ export class CuotasHitoService implements OnApplicationBootstrap {
     }
 
     // Milestone not approved by its deadline: internal escalation only (student is not charged or messaged).
-    const vencidos = await this.cuotasConContacto(`cp.estado = 'ESPERA_HITO' AND cp.fecha_vencimiento < CAST(GETDATE() AS DATE)`);
+    const vencidos = await this.cuotasConContacto(
+      `cp.estado = 'ESPERA_HITO' AND cp.fecha_vencimiento < CAST(GETDATE() AS DATE) AND op.estado <> 'ANULADA'`,
+    );
     for (const c of vencidos) {
       const cuotaId = Number(c.cuota_id);
       if (await this.yaEnviado(cuotaId, 'Hito vencido sin aprobar')) continue;

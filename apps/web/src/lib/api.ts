@@ -157,6 +157,19 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(data),
     }),
+  anularPago: (pagoId: string | number, motivo?: string) =>
+    fetchApi(`/payers/pagos/${String(pagoId).replace('tesis-pago-', '')}/anular`, {
+      method: 'POST',
+      body: JSON.stringify({ motivo }),
+    }),
+  cancelarCuotasPendientes: (
+    ordenPagoId: number | string,
+    data?: { cuotaId?: number; motivo?: string },
+  ) =>
+    fetchApi(`/payers/ordenes/${ordenPagoId}/cancelar-cuotas`, {
+      method: 'POST',
+      body: JSON.stringify(data || {}),
+    }),
   sincronizarPagosCulqi: () =>
     fetchApi('/payments/sincronizar-culqi', {
       method: 'POST',

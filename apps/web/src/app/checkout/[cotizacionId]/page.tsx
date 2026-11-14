@@ -15,6 +15,7 @@ import {
   AlertCircle,
   Video,
   ExternalLink,
+  Ban,
 } from 'lucide-react';
 import { api } from '@/lib/api';
 
@@ -40,18 +41,24 @@ export default function CheckoutPage() {
   const cuotasTotal = cotizacion?.cuotas || 1;
   const totalContrato = Number(cotizacion?.total || 0);
   const yaPagado = cotizacion?.pagoEstado === 'CONFIRMADO' || cotizacion?.estado === 'PAGADA';
+  const ordenAnulada =
+    Boolean(cotizacion?.planCuotas?.ordenAnulada) ||
+    cotizacion?.estado === 'ANULADA' ||
+    cotizacion?.pagoEstado === 'ANULADA';
   const montoPorCuota = Number(cotizacion?.planCuotas?.montoPorCuota) || (esCuotas ? Math.round((totalContrato / cuotasTotal) * 100) / 100 : totalContrato);
   const cuotaActualNumero = Number(cotizacion?.planCuotas?.cuotaActualNumero || 1);
   const cuotaActualEstado = cotizacion?.planCuotas?.cuotaActualEstado || 'EXIGIBLE';
   const cuotaActualCondicion = cotizacion?.planCuotas?.cuotaActualCondicion || 'Cuota inicial';
   const bloqueadaPorHito = Boolean(cotizacion?.planCuotas?.bloqueadaPorHito);
   const cuotasPagadas = Number(cotizacion?.planCuotas?.cuotasPagadas || 0);
+  const cuotasAnuladas = Number(cotizacion?.planCuotas?.cuotasAnuladas || 0);
   const montoPagado = Number(cotizacion?.planCuotas?.montoPagado || 0);
+  const montoAnulado = Number(cotizacion?.planCuotas?.montoAnulado || 0);
   const cuotasDetalle: any[] = cotizacion?.planCuotas?.cuotasDetalle || [];
   const [tipoAbono, setTipoAbono] = useState<'CUOTA' | 'TOTAL'>('CUOTA');
 
-  const montoAPagar = esCuotas && tipoAbono === 'CUOTA' ? montoPorCuota : Math.max(0, totalContrato - montoPagado);
-  const saldoRestante = Math.max(0, totalContrato - montoPagado - montoAPagar);
+  const montoAPagar = esCuotas && tipoAbono === 'CUOTA' ? montoPorCuota : Math.max(0, totalContrato - montoPagado - montoAnulado);
+  const saldoRestante = Math.max(0, totalContrato - montoPagado - montoAnulado - montoAPagar);
 
   useEffect(() => {
     if (cotizacionId) {
@@ -226,6 +233,77 @@ export default function CheckoutPage() {
             </Link>
           </div>
         </div>
+      ) : ordenAnulada ? (
+        /* Pantalla de Orden o Cuotas Pendientes Canceladas (RN_12) */
+        <div className="glass-panel p-6 sm:p-8 rounded-2xl border border-rose-300 dark:border-rose-500/40 bg-white dark:bg-slate-900 shadow-xl space-y-6 animate-fade-in">
+          <div className="flex flex-col sm:flex-row items-center gap-4 border-b border-slate-200 dark:border-slate-800 pb-5">
+            <div className="w-14 h-14 rounded-2xl bg-rose-100 dark:bg-rose-500/20 text-rose-700 dark:text-rose-400 flex items-center justify-center border border-rose-200 dark:border-rose-500/40 shrink-0">
+              <Ban className="w-7 h-7" />
+            </div>
+            <div className="text-center sm:text-left">
+              <span className="text-[11px] font-black uppercase tracking-wider px-2.5 py-0.5 rounded-full bg-rose-100 text-rose-800 dark:bg-rose-950/60 dark:text-rose-300 border border-rose-300 dark:border-rose-800">
+                Orden / Cuotas Pendientes Canceladas
+              </span>
+              <h1 className="font-heading text-xl sm:text-2xl font-black text-slate-900 dark:text-white mt-2">
+                No existen cuotas pendientes de pago para {cotizacion.codigoCotizacion}
+              </h1>
+              <p className="text-xs text-slate-600 dark:text-slate-300 mt-1">
+                {cuotasAnuladas > 0
+                  ? `Se cancelaron ${cuotasAnuladas} cuota(s) pendiente(s) por S/ ${montoAnulado.toFixed(2)} conforme a la política de cobranza (RN_12). Los pagos ya acreditados (${cuotasPagadas} cuota(s), S/ ${montoPagado.toFixed(2)}) se mantienen registrados.`
+                  : 'Esta orden de pago fue anulada y ya no admite cobros por pasarela.'}
+              </p>
+            </div>
+          </div>
+
+          {cuotasDetalle.length > 0 && (
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              {cuotasDetalle.map((c: any) => {
+                const pagada = c.estado === 'PAGADA';
+                const anulada = c.estado === 'ANULADA';
+                return (
+                  <div
+                    key={c.cuotaId}
+                    className={`p-3.5 rounded-xl border text-xs space-y-1.5 ${
+                      pagada
+                        ? 'bg-emerald-50/60 dark:bg-emerald-950/20 border-emerald-300 dark:border-emerald-800'
+                        : anulada
+                          ? 'bg-rose-50/60 dark:bg-rose-950/20 border-rose-300 dark:border-rose-800 opacity-85'
+                          : 'bg-slate-50 dark:bg-slate-950 border-slate-200 dark:border-slate-800'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="font-heading font-black text-slate-900 dark:text-white">
+                        Cuota #{c.numero} ({c.porcentaje}%)
+                      </span>
+                      <span
+                        className={`px-2 py-0.5 rounded-full text-[10px] font-black ${
+                          pagada
+                            ? 'bg-emerald-200 text-emerald-900 dark:bg-emerald-900 dark:text-emerald-200'
+                            : 'bg-rose-200 text-rose-900 dark:bg-rose-900 dark:text-rose-200'
+                        }`}
+                      >
+                        {c.estado}
+                      </span>
+                    </div>
+                    <div className="font-mono font-bold text-sm text-slate-900 dark:text-white">
+                      S/ {Number(c.monto).toFixed(2)}
+                    </div>
+                    <p className="text-[11px] text-slate-600 dark:text-slate-400">{c.condicion}</p>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          <div className="pt-1 flex justify-end">
+            <Link
+              href="/admin/payers/reporte"
+              className="px-4 py-2.5 rounded-xl font-bold text-xs bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 transition-all"
+            >
+              Volver al Panel PAYERS
+            </Link>
+          </div>
+        </div>
       ) : bloqueadaPorHito ? (
         /* Pantalla de Cuota Bloqueada en Espera de Validación de Hito Académico (Opción B) */
         <div className="glass-panel p-6 sm:p-8 rounded-2xl border border-amber-300 dark:border-amber-500/40 bg-white dark:bg-slate-900 shadow-xl space-y-6 animate-fade-in">
@@ -256,15 +334,18 @@ export default function CheckoutPage() {
               {cuotasDetalle.map((c: any) => {
                 const pagada = c.estado === 'PAGADA';
                 const espera = c.estado === 'ESPERA_HITO';
+                const anulada = c.estado === 'ANULADA';
                 return (
                   <div
                     key={c.cuotaId}
                     className={`p-3.5 rounded-xl border text-xs space-y-1.5 ${
                       pagada
                         ? 'bg-emerald-50/60 dark:bg-emerald-950/20 border-emerald-300 dark:border-emerald-800'
-                        : espera
-                          ? 'bg-amber-50/60 dark:bg-amber-950/20 border-amber-300 dark:border-amber-800'
-                          : 'bg-sky-50/60 dark:bg-sky-950/20 border-sky-300 dark:border-sky-800'
+                        : anulada
+                          ? 'bg-rose-50/60 dark:bg-rose-950/20 border-rose-300 dark:border-rose-800 opacity-85'
+                          : espera
+                            ? 'bg-amber-50/60 dark:bg-amber-950/20 border-amber-300 dark:border-amber-800'
+                            : 'bg-sky-50/60 dark:bg-sky-950/20 border-sky-300 dark:border-sky-800'
                     }`}
                   >
                     <div className="flex items-center justify-between">
@@ -275,9 +356,11 @@ export default function CheckoutPage() {
                         className={`px-2 py-0.5 rounded-full text-[10px] font-black ${
                           pagada
                             ? 'bg-emerald-200 text-emerald-900 dark:bg-emerald-900 dark:text-emerald-200'
-                            : espera
-                              ? 'bg-amber-200 text-amber-900 dark:bg-amber-900 dark:text-amber-200'
-                              : 'bg-sky-200 text-sky-900 dark:bg-sky-900 dark:text-sky-200'
+                            : anulada
+                              ? 'bg-rose-200 text-rose-900 dark:bg-rose-900 dark:text-rose-200'
+                              : espera
+                                ? 'bg-amber-200 text-amber-900 dark:bg-amber-900 dark:text-amber-200'
+                                : 'bg-sky-200 text-sky-900 dark:bg-sky-900 dark:text-sky-200'
                         }`}
                       >
                         {c.estado}

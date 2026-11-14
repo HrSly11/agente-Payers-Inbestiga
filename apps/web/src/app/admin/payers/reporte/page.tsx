@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import {
   BarChart3,
@@ -19,11 +19,49 @@ import {
   BookOpen,
   Receipt,
   GraduationCap,
+  Users,
+  Search,
+  ChevronDown,
+  ChevronRight,
+  Phone,
+  Mail,
+  Building2,
+  UserCheck,
+  Calendar,
+  ExternalLink,
+  AlertCircle,
 } from 'lucide-react';
 import { api } from '@/lib/api';
 
 type VistaActiva = 'VISTA_3_1' | 'VISTA_3_2' | 'VISTA_3_3';
 type AlcancePdf = 'COMPLETO' | 'VISTA_3_1' | 'VISTA_3_2' | 'VISTA_3_3';
+
+const ESTADO_ORDEN_BADGES: Record<string, string> = {
+  PAGADA: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/70 dark:text-emerald-300 border-emerald-300 dark:border-emerald-800',
+  PARCIAL: 'bg-sky-100 text-sky-800 dark:bg-sky-950/70 dark:text-sky-300 border-sky-300 dark:border-sky-800',
+  ENLACE_ENVIADO: 'bg-amber-100 text-amber-800 dark:bg-amber-950/70 dark:text-amber-300 border-amber-300 dark:border-amber-800',
+  ANULADA: 'bg-rose-100 text-rose-800 dark:bg-rose-950/70 dark:text-rose-300 border-rose-300 dark:border-rose-800',
+  PENDIENTE: 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300 border-slate-300 dark:border-slate-700',
+};
+
+const formatMoneda = (valor: number | string | null | undefined): string =>
+  `S/ ${Number(valor ?? 0).toLocaleString('es-PE', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+
+const formatFechaCorta = (valor: string | null | undefined): string => {
+  if (!valor) return '—';
+  const fecha = new Date(valor);
+  if (Number.isNaN(fecha.getTime())) return String(valor);
+  return fecha.toLocaleString('es-PE', {
+    year: 'numeric',
+    month: 'short',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+};
 
 export default function PayersReportePage() {
   const [overview, setOverview] = useState<any>(null);
@@ -34,6 +72,21 @@ export default function PayersReportePage() {
   // Selector de pestaña para no amontonar las tablas complejas
   const [vistaActiva, setVistaActiva] = useState<VistaActiva>('VISTA_3_1');
   const [subVista31, setSubVista31] = useState<'MODALIDAD' | 'SERVICIO'>('MODALIDAD');
+
+  // Drill-down interactivo de Vista 3.1: fila -> listado de integrantes -> ficha de persona
+  const [selectedModalidad, setSelectedModalidad] = useState<string | null>(null);
+  const [selectedServicio, setSelectedServicio] = useState<string | null>(null);
+  const [drillSearch, setDrillSearch] = useState<string>('');
+  const [drillEstadoFiltro, setDrillEstadoFiltro] = useState<'TODOS' | 'CON_PAGO' | 'SIN_PAGO'>('TODOS');
+
+  // Modal de detalle por persona seleccionada
+  const [personaSeleccionada, setPersonaSeleccionada] = useState<any>(null);
+  const [personaDetalleApi, setPersonaDetalleApi] = useState<any>(null);
+  const [loadingPersonaDetalle, setLoadingPersonaDetalle] = useState<boolean>(false);
+  const [permiteAnularPago, setPermiteAnularPago] = useState<boolean>(true);
+  const [permiteCancelarCuotas, setPermiteCancelarCuotas] = useState<boolean>(true);
+  const [anulandoPagoId, setAnulandoPagoId] = useState<number | null>(null);
+  const [cancelandoCuotas, setCancelandoCuotas] = useState<boolean>(false);
 
   // Modal de Previsualización e Impresión en PDF
   const [pdfModalOpen, setPdfModalOpen] = useState<boolean>(false);
@@ -78,12 +131,159 @@ export default function PayersReportePage() {
     window.print();
   };
 
-  const kpis: any[] = overview?.kpis || [];
+  const abrirDetallePersona = async (persona: any) => {
+    setPersonaSeleccionada(persona);
+    setPersonaDetalleApi(null);
+    setLoadingPersonaDetalle(true);
+    try {
+      const [detalle, reglas] = await Promise.all([
+        api.getPayerOrden(persona.id_orden_pago),
+        api.getBusinessRules().catch(() => []),
+      ]);
+      setPersonaDetalleApi(detalle);
+      const rn11 = Array.isArray(reglas)
+        ? reglas.find((r: any) => r.codigo === 'RN_11_PERMITIR_ANULACION_PAGO')
+        : null;
+      if (rn11) {
+        const val = String(rn11.valor || '').trim().toLowerCase();
+        setPermiteAnularPago(Boolean(rn11.activo) && ['true', '1', 'si', 'sí'].includes(val));
+      }
+      const rn12 = Array.isArray(reglas)
+        ? reglas.find((r: any) => r.codigo === 'RN_12_CANCELAR_CUOTAS_PENDIENTES')
+        : null;
+      if (rn12) {
+        const val12 = String(rn12.valor || '').trim().toLowerCase();
+        setPermiteCancelarCuotas(Boolean(rn12.activo) && ['true', '1', 'si', 'sí'].includes(val12));
+      }
+    } catch (err) {
+      console.error('Error cargando detalle de persona/orden:', err);
+    } finally {
+      setLoadingPersonaDetalle(false);
+    }
+  };
+
+  const handleAnularPagoDesdeModal = async (pagoId: number) => {
+    if (!permiteAnularPago) {
+      setStatusBanner(
+        'Operación bloqueada por regla de negocio RN_11_PERMITIR_ANULACION_PAGO (deshabilitada en Reglas de Negocio).',
+      );
+      return;
+    }
+    const motivo = window.prompt('Motivo de anulación del pago (se registrará en Auditoría):', 'Error de cobro o solicitud administrativa');
+    if (motivo === null) return;
+    setAnulandoPagoId(pagoId);
+    try {
+      const res = await api.anularPago(pagoId, motivo);
+      setStatusBanner(res?.mensaje || `Pago #${pagoId} anulado correctamente.`);
+      const [detalleActualizado] = await Promise.all([
+        api.getPayerOrden(personaSeleccionada.id_orden_pago),
+        cargarOverview(),
+      ]);
+      setPersonaDetalleApi(detalleActualizado);
+    } catch (err: any) {
+      setStatusBanner(`No se pudo anular el pago #${pagoId}: ${err?.message || 'Error desconocido'}`);
+    } finally {
+      setAnulandoPagoId(null);
+    }
+  };
+
+  const handleCancelarCuotasDesdeModal = async (cuotaId?: number) => {
+    if (!personaSeleccionada?.id_orden_pago) return;
+    if (!permiteCancelarCuotas) {
+      setStatusBanner(
+        'Operación bloqueada por regla de negocio RN_12_CANCELAR_CUOTAS_PENDIENTES (deshabilitada en Reglas de Negocio).',
+      );
+      return;
+    }
+    const motivo = window.prompt(
+      cuotaId
+        ? `Motivo para cancelar la cuota seleccionada (RN_12):`
+        : 'Motivo para cancelar todas las cuotas pendientes de esta orden (RN_12):',
+      'Desistimiento o ajuste administrativo de cuotas futuras',
+    );
+    if (motivo === null) return;
+    setCancelandoCuotas(true);
+    try {
+      const res = await api.cancelarCuotasPendientes(personaSeleccionada.id_orden_pago, {
+        ...(cuotaId ? { cuotaId } : {}),
+        motivo,
+      });
+      setStatusBanner(
+        res?.mensaje || `Se cancelaron ${res?.cuotasCanceladas ?? 0} cuota(s) pendiente(s) según RN_12.`,
+      );
+      const [detalleActualizado] = await Promise.all([
+        api.getPayerOrden(personaSeleccionada.id_orden_pago),
+        cargarOverview(),
+      ]);
+      setPersonaDetalleApi(detalleActualizado);
+      if (detalleActualizado?.orden?.estado) {
+        setPersonaSeleccionada((prev: any) =>
+          prev ? { ...prev, estado_orden: detalleActualizado.orden.estado } : prev,
+        );
+      }
+    } catch (err: any) {
+      setStatusBanner(`No se pudieron cancelar las cuotas pendientes: ${err?.message || 'Error desconocido'}`);
+    } finally {
+      setCancelandoCuotas(false);
+    }
+  };
+
+  const cerrarDetallePersona = () => {
+    setPersonaSeleccionada(null);
+    setPersonaDetalleApi(null);
+  };
+
+  const handleCambiarSubVista31 = (nextSubVista: 'MODALIDAD' | 'SERVICIO') => {
+    setSubVista31(nextSubVista);
+    setDrillSearch('');
+    setDrillEstadoFiltro('TODOS');
+  };
+
+  const kpis: any[] = overview?.kpisP01P06 || overview?.kpis || [];
   const vista31Ordenes: any[] = overview?.vista31Ordenes || [];
   const vista31Servicio: any[] = overview?.vista31Servicio || [];
   const vista32Recuperacion: any[] = overview?.vista32Recuperacion || [];
   const vista33Medios: any[] = overview?.vista33Medios || [];
+  const ordenesDetalle: any[] = overview?.ordenesDetalle || [];
   const resumenOp = overview?.resumenOperativo || {};
+
+  const totalVista31 = vista31Ordenes.find((r) => r.modalidad_pago === 'TOTAL') || {};
+  const totalVista32 = vista32Recuperacion.find((r) => String(r.secuencia || r.tipo_alerta).includes('TOTAL')) || {};
+
+  const filaActiva31 = subVista31 === 'MODALIDAD' ? selectedModalidad : selectedServicio;
+
+  const personasDeFila = useMemo(() => {
+    if (!filaActiva31) return [];
+    if (subVista31 === 'MODALIDAD') {
+      if (filaActiva31 === 'TOTAL') return ordenesDetalle;
+      return ordenesDetalle.filter((o) => o.modalidad_pago === filaActiva31);
+    }
+    return ordenesDetalle.filter((o) => o.servicio === filaActiva31);
+  }, [filaActiva31, subVista31, ordenesDetalle]);
+
+  const personasFiltradas = useMemo(() => {
+    const query = drillSearch.trim().toLowerCase();
+    return personasDeFila.filter((o) => {
+      const tienePago = Number(o.pagos_confirmados || 0) > 0 || Number(o.monto_cobrado || 0) > 0;
+      const pasaEstado =
+        drillEstadoFiltro === 'TODOS' ||
+        (drillEstadoFiltro === 'CON_PAGO' && tienePago) ||
+        (drillEstadoFiltro === 'SIN_PAGO' && !tienePago);
+      if (!pasaEstado) return false;
+      if (!query) return true;
+      return [
+        o.estudiante,
+        o.codigo_orden,
+        o.codigo_contrato,
+        o.universidad,
+        o.carrera,
+        o.telefono,
+        o.email,
+      ]
+        .filter(Boolean)
+        .some((campo) => String(campo).toLowerCase().includes(query));
+    });
+  }, [personasDeFila, drillSearch, drillEstadoFiltro]);
 
   return (
     <div className="space-y-8 pb-12">
@@ -195,7 +395,8 @@ export default function PayersReportePage() {
               {resumenOp.totalOrdenes ?? 104}
             </div>
             <p className="text-xs text-slate-500 dark:text-slate-400">
-              {resumenOp.totalContratos ?? 104} contratos firmados · <strong>S/ 180,540.00</strong> comprometidos
+              {resumenOp.totalContratos ?? 104} contratos firmados ·{' '}
+              <strong>{formatMoneda(totalVista31.monto_comprometido ?? 180540)}</strong> comprometidos
             </p>
           </div>
 
@@ -204,7 +405,7 @@ export default function PayersReportePage() {
               Recaudación Efectiva Acreditada
             </div>
             <div className="text-3xl font-black font-mono text-emerald-700 dark:text-emerald-400">
-              S/ 110,480.00
+              {formatMoneda(totalVista31.monto_cobrado ?? 110480)}
             </div>
             <p className="text-xs text-slate-600 dark:text-slate-400">
               <strong>{resumenOp.totalPagosConfirmados ?? 150} abonos</strong> confirmados ({resumenOp.totalWebhooks ?? 123} vía pasarela)
@@ -228,7 +429,7 @@ export default function PayersReportePage() {
               Recuperación por Alertas IA
             </div>
             <div className="text-3xl font-black font-mono text-amber-700 dark:text-amber-400">
-              34 / {resumenOp.totalAlertas ?? 55}
+              {totalVista32.payers_recuperados_72h ?? 34} / {totalVista32.payers_alertados ?? resumenOp.totalAlertas ?? 55}
             </div>
             <p className="text-xs text-slate-600 dark:text-slate-400">
               Órdenes recuperadas dentro de las 72h posteriores al recordatorio
@@ -369,7 +570,7 @@ export default function PayersReportePage() {
                   Vista 3.1 — Recaudación por Modalidad de Pago y Tipo de Servicio Académico (P01, P02 y P04)
                 </h3>
                 <p className="text-xs text-slate-500 mt-0.5">
-                  Compara el monto comprometido vs. monto exigible y cobrado en las 104 órdenes de pago.
+                  Compara el monto comprometido vs. monto exigible y cobrado en las {totalVista31.ordenes_creadas ?? 104} órdenes de pago. Haz clic en cualquier fila para ver las personas asignadas.
                 </p>
               </div>
 
@@ -377,7 +578,7 @@ export default function PayersReportePage() {
                 <div className="inline-flex rounded-xl border border-slate-200 dark:border-slate-800 p-1 bg-slate-50 dark:bg-slate-950">
                   <button
                     type="button"
-                    onClick={() => setSubVista31('MODALIDAD')}
+                    onClick={() => handleCambiarSubVista31('MODALIDAD')}
                     className={`px-3 py-1 rounded-lg text-xs font-bold cursor-pointer ${
                       subVista31 === 'MODALIDAD'
                         ? 'bg-emerald-600 text-white'
@@ -388,7 +589,7 @@ export default function PayersReportePage() {
                   </button>
                   <button
                     type="button"
-                    onClick={() => setSubVista31('SERVICIO')}
+                    onClick={() => handleCambiarSubVista31('SERVICIO')}
                     className={`px-3 py-1 rounded-lg text-xs font-bold cursor-pointer ${
                       subVista31 === 'SERVICIO'
                         ? 'bg-emerald-600 text-white'
@@ -423,21 +624,39 @@ export default function PayersReportePage() {
                       <th className="py-3.5 px-4 text-right">Monto Exigible Hoy</th>
                       <th className="py-3.5 px-4 text-right">Monto Cobrado</th>
                       <th className="py-3.5 px-3 text-center">Efectividad P04</th>
+                      <th className="py-3.5 px-3 text-center">Integrantes</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100 dark:divide-slate-800/70">
                     {vista31Ordenes.map((row: any) => {
                       const isTotal = row.modalidad_pago === 'TOTAL';
+                      const isSelected = selectedModalidad === row.modalidad_pago;
                       return (
                         <tr
                           key={row.modalidad_pago}
-                          className={
-                            isTotal
-                              ? 'bg-emerald-50/80 dark:bg-emerald-950/30 font-black text-slate-900 dark:text-white'
-                              : 'hover:bg-slate-50 dark:hover:bg-slate-800/40'
-                          }
+                          onClick={() => {
+                            setSelectedModalidad(isSelected ? null : row.modalidad_pago);
+                            setDrillSearch('');
+                            setDrillEstadoFiltro('TODOS');
+                          }}
+                          className={`cursor-pointer transition-colors ${
+                            isSelected
+                              ? 'bg-emerald-50 dark:bg-emerald-950/50 ring-1 ring-inset ring-emerald-500/60 font-bold'
+                              : isTotal
+                                ? 'bg-emerald-50/80 dark:bg-emerald-950/30 hover:bg-emerald-100/70 dark:hover:bg-emerald-950/50 font-black text-slate-900 dark:text-white'
+                                : 'hover:bg-slate-50 dark:hover:bg-slate-800/50'
+                          }`}
                         >
-                          <td className="py-3.5 px-4 font-semibold">{row.modalidad_pago}</td>
+                          <td className="py-3.5 px-4 font-semibold">
+                            <div className="flex items-center gap-2">
+                              <ChevronRight
+                                className={`w-4 h-4 shrink-0 transition-transform ${
+                                  isSelected ? 'rotate-90 text-emerald-500' : 'text-slate-400'
+                                }`}
+                              />
+                              <span>{row.modalidad_pago}</span>
+                            </div>
+                          </td>
                           <td className="py-3.5 px-3 text-center font-mono">{row.ordenes_creadas}</td>
                           <td className="py-3.5 px-3 text-center font-mono text-emerald-700 dark:text-emerald-400 font-bold">
                             {row.ordenes_con_pago}
@@ -446,16 +665,28 @@ export default function PayersReportePage() {
                             {row.pct_confirmacion_p01}%
                           </td>
                           <td className="py-3.5 px-4 text-right font-mono">
-                            S/ {Number(row.monto_comprometido).toLocaleString('es-PE', { minimumFractionDigits: 2 })}
+                            {formatMoneda(row.monto_comprometido)}
                           </td>
                           <td className="py-3.5 px-4 text-right font-mono">
-                            S/ {Number(row.monto_exigible).toLocaleString('es-PE', { minimumFractionDigits: 2 })}
+                            {formatMoneda(row.monto_exigible)}
                           </td>
                           <td className="py-3.5 px-4 text-right font-mono text-emerald-700 dark:text-emerald-400 font-bold">
-                            S/ {Number(row.monto_cobrado).toLocaleString('es-PE', { minimumFractionDigits: 2 })}
+                            {formatMoneda(row.monto_cobrado)}
                           </td>
                           <td className="py-3.5 px-3 text-center font-mono font-bold text-sky-600 dark:text-sky-400">
                             {row.pct_cobranza_efectiva_p04}%
+                          </td>
+                          <td className="py-3.5 px-3 text-center">
+                            <span
+                              className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-bold border ${
+                                isSelected
+                                  ? 'bg-emerald-600 text-white border-emerald-600'
+                                  : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700'
+                              }`}
+                            >
+                              <Users className="w-3 h-3" />
+                              <span>{isSelected ? 'Ocultar' : `Ver (${row.ordenes_creadas})`}</span>
+                            </span>
                           </td>
                         </tr>
                       );
@@ -476,37 +707,236 @@ export default function PayersReportePage() {
                       <th className="py-3.5 px-4 text-right">Monto Exigible</th>
                       <th className="py-3.5 px-4 text-right">Monto Cobrado</th>
                       <th className="py-3.5 px-3 text-center">Efectividad P04</th>
+                      <th className="py-3.5 px-3 text-center">Integrantes</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100 dark:divide-slate-800/70">
-                    {vista31Servicio.map((row: any) => (
-                      <tr key={row.servicio} className="hover:bg-slate-50 dark:hover:bg-slate-800/40">
-                        <td className="py-3.5 px-4 font-semibold text-slate-900 dark:text-white">
-                          {row.servicio}
-                        </td>
-                        <td className="py-3.5 px-3 text-center font-mono">{row.ordenes_creadas}</td>
-                        <td className="py-3.5 px-3 text-center font-mono text-emerald-700 dark:text-emerald-400 font-bold">
-                          {row.ordenes_con_pago}
-                        </td>
-                        <td className="py-3.5 px-3 text-center font-mono font-bold">
-                          {row.pct_confirmacion_p01}%
-                        </td>
-                        <td className="py-3.5 px-3 text-center font-mono text-amber-600 dark:text-amber-400 font-bold">
-                          {row.minutos_primer_pago_p02} min
-                        </td>
-                        <td className="py-3.5 px-4 text-right font-mono">
-                          S/ {Number(row.monto_exigible).toLocaleString('es-PE', { minimumFractionDigits: 2 })}
-                        </td>
-                        <td className="py-3.5 px-4 text-right font-mono text-emerald-700 dark:text-emerald-400 font-bold">
-                          S/ {Number(row.monto_cobrado).toLocaleString('es-PE', { minimumFractionDigits: 2 })}
-                        </td>
-                        <td className="py-3.5 px-3 text-center font-mono font-bold text-sky-600 dark:text-sky-400">
-                          {row.pct_cobranza_efectiva_p04}%
-                        </td>
-                      </tr>
-                    ))}
+                    {vista31Servicio.map((row: any) => {
+                      const isSelected = selectedServicio === row.servicio;
+                      return (
+                        <tr
+                          key={row.servicio}
+                          onClick={() => {
+                            setSelectedServicio(isSelected ? null : row.servicio);
+                            setDrillSearch('');
+                            setDrillEstadoFiltro('TODOS');
+                          }}
+                          className={`cursor-pointer transition-colors ${
+                            isSelected
+                              ? 'bg-sky-50 dark:bg-sky-950/40 ring-1 ring-inset ring-sky-500/60 font-bold'
+                              : 'hover:bg-slate-50 dark:hover:bg-slate-800/50'
+                          }`}
+                        >
+                          <td className="py-3.5 px-4 font-semibold text-slate-900 dark:text-white">
+                            <div className="flex items-center gap-2">
+                              <ChevronRight
+                                className={`w-4 h-4 shrink-0 transition-transform ${
+                                  isSelected ? 'rotate-90 text-sky-500' : 'text-slate-400'
+                                }`}
+                              />
+                              <span>{row.servicio}</span>
+                            </div>
+                          </td>
+                          <td className="py-3.5 px-3 text-center font-mono">{row.ordenes_creadas}</td>
+                          <td className="py-3.5 px-3 text-center font-mono text-emerald-700 dark:text-emerald-400 font-bold">
+                            {row.ordenes_con_pago}
+                          </td>
+                          <td className="py-3.5 px-3 text-center font-mono font-bold">
+                            {row.pct_confirmacion_p01}%
+                          </td>
+                          <td className="py-3.5 px-3 text-center font-mono text-amber-600 dark:text-amber-400 font-bold">
+                            {row.minutos_primer_pago_p02} min
+                          </td>
+                          <td className="py-3.5 px-4 text-right font-mono">
+                            {formatMoneda(row.monto_exigible)}
+                          </td>
+                          <td className="py-3.5 px-4 text-right font-mono text-emerald-700 dark:text-emerald-400 font-bold">
+                            {formatMoneda(row.monto_cobrado)}
+                          </td>
+                          <td className="py-3.5 px-3 text-center font-mono font-bold text-sky-600 dark:text-sky-400">
+                            {row.pct_cobranza_efectiva_p04}%
+                          </td>
+                          <td className="py-3.5 px-3 text-center">
+                            <span
+                              className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-bold border ${
+                                isSelected
+                                  ? 'bg-sky-600 text-white border-sky-600'
+                                  : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700'
+                              }`}
+                            >
+                              <Users className="w-3 h-3" />
+                              <span>{isSelected ? 'Ocultar' : `Ver (${row.ordenes_creadas})`}</span>
+                            </span>
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
+              </div>
+            )}
+
+            {/* PANEL DRILL-DOWN: LISTADO DE PERSONAS QUE PERTENECEN A LA FILA SELECCIONADA */}
+            {filaActiva31 && (
+              <div className="rounded-2xl border border-emerald-500/30 dark:border-emerald-800/70 bg-slate-50/80 dark:bg-slate-950/60 p-4 sm:p-5 space-y-4">
+                <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 border-b border-slate-200 dark:border-slate-800 pb-3.5">
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-black uppercase bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-800">
+                        <Users className="w-3.5 h-3.5" />
+                        <span>{subVista31 === 'MODALIDAD' ? 'Modalidad seleccionada' : 'Servicio seleccionado'}</span>
+                      </span>
+                      <span className="text-xs font-mono font-bold text-slate-500 dark:text-slate-400">
+                        {personasFiltradas.length} de {personasDeFila.length} personas
+                      </span>
+                    </div>
+                    <h4 className="text-sm sm:text-base font-black text-slate-900 dark:text-white">
+                      {filaActiva31 === 'TOTAL'
+                        ? 'Todos los estudiantes y órdenes (TOTAL)'
+                        : filaActiva31}
+                    </h4>
+                    <p className="text-xs text-slate-500">
+                      Haz clic sobre cualquier persona para abrir su expediente completo, cronograma de cuotas y pagos acreditados.
+                    </p>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2">
+                    <div className="relative">
+                      <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                      <input
+                        type="text"
+                        value={drillSearch}
+                        onChange={(e) => setDrillSearch(e.target.value)}
+                        placeholder="Buscar nombre, ORD o carrera..."
+                        className="pl-8 pr-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-500 w-56"
+                      />
+                    </div>
+
+                    <div className="inline-flex rounded-xl border border-slate-200 dark:border-slate-800 p-0.5 bg-white dark:bg-slate-900">
+                      {(
+                        [
+                          { id: 'TODOS', label: 'Todos' },
+                          { id: 'CON_PAGO', label: 'Con pago' },
+                          { id: 'SIN_PAGO', label: 'Sin pago' },
+                        ] as const
+                      ).map((opt) => (
+                        <button
+                          key={opt.id}
+                          type="button"
+                          onClick={() => setDrillEstadoFiltro(opt.id)}
+                          className={`px-2.5 py-1 rounded-lg text-[11px] font-bold cursor-pointer transition-colors ${
+                            drillEstadoFiltro === opt.id
+                              ? 'bg-emerald-600 text-white'
+                              : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                          }`}
+                        >
+                          {opt.label}
+                        </button>
+                      ))}
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() =>
+                        subVista31 === 'MODALIDAD'
+                          ? setSelectedModalidad(null)
+                          : setSelectedServicio(null)
+                      }
+                      className="p-1.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-500 hover:text-slate-900 dark:hover:text-white cursor-pointer"
+                      title="Cerrar listado"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+
+                {personasFiltradas.length === 0 ? (
+                  <div className="py-8 text-center text-xs text-slate-500">
+                    No se encontraron personas que coincidan con el filtro aplicado en esta categoría.
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto max-h-[380px] overflow-y-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900">
+                    <table className="w-full text-left text-xs border-collapse">
+                      <thead className="sticky top-0 z-10 bg-slate-100 dark:bg-slate-950 border-b border-slate-200 dark:border-slate-800 text-[10px] uppercase text-slate-500 font-bold">
+                        <tr>
+                          <th className="py-2.5 px-3.5">Persona / Estudiante</th>
+                          <th className="py-2.5 px-3">Orden & Contrato</th>
+                          <th className="py-2.5 px-3">
+                            {subVista31 === 'MODALIDAD' ? 'Servicio Académico' : 'Modalidad de Pago'}
+                          </th>
+                          <th className="py-2.5 px-3 text-right">Comprometido</th>
+                          <th className="py-2.5 px-3 text-right">Cobrado</th>
+                          <th className="py-2.5 px-3 text-center">Estado</th>
+                          <th className="py-2.5 px-3 text-center">Detalle</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 dark:divide-slate-800/70">
+                        {personasFiltradas.map((persona: any) => {
+                          const badgeClass =
+                            ESTADO_ORDEN_BADGES[persona.estado_orden] || ESTADO_ORDEN_BADGES.PENDIENTE;
+                          return (
+                            <tr
+                              key={persona.id_orden_pago}
+                              onClick={() => abrirDetallePersona(persona)}
+                              className="cursor-pointer hover:bg-emerald-50/70 dark:hover:bg-emerald-950/30 transition-colors"
+                            >
+                              <td className="py-2.5 px-3.5">
+                                <div className="font-bold text-slate-900 dark:text-white">
+                                  {persona.estudiante}
+                                </div>
+                                <div className="text-[11px] text-slate-500 dark:text-slate-400">
+                                  {persona.universidad} · {persona.carrera}
+                                </div>
+                              </td>
+                              <td className="py-2.5 px-3 font-mono">
+                                <div className="font-bold text-emerald-700 dark:text-emerald-400">
+                                  {persona.codigo_orden}
+                                </div>
+                                <div className="text-[10px] text-slate-500">{persona.codigo_contrato}</div>
+                              </td>
+                              <td className="py-2.5 px-3 text-slate-700 dark:text-slate-300">
+                                <div>
+                                  {subVista31 === 'MODALIDAD'
+                                    ? persona.servicio
+                                    : persona.modalidad_pago}
+                                </div>
+                                <div className="text-[10px] text-slate-500">
+                                  {persona.numero_cuotas} cuota(s) · {persona.pagos_confirmados} abono(s)
+                                </div>
+                              </td>
+                              <td className="py-2.5 px-3 text-right font-mono text-slate-700 dark:text-slate-300">
+                                {formatMoneda(persona.monto_comprometido)}
+                              </td>
+                              <td className="py-2.5 px-3 text-right font-mono font-bold text-emerald-700 dark:text-emerald-400">
+                                {formatMoneda(persona.monto_cobrado)}
+                              </td>
+                              <td className="py-2.5 px-3 text-center">
+                                <span
+                                  className={`inline-flex px-2 py-0.5 rounded-full text-[10px] font-extrabold border ${badgeClass}`}
+                                >
+                                  {persona.estado_orden}
+                                </span>
+                              </td>
+                              <td className="py-2.5 px-3 text-center">
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    abrirDetallePersona(persona);
+                                  }}
+                                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-bold cursor-pointer"
+                                >
+                                  <Eye className="w-3 h-3" />
+                                  <span>Ver</span>
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -934,6 +1364,433 @@ export default function PayersReportePage() {
                   <span>Descargar / Imprimir PDF</span>
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* =========================================================================
+          MODAL DE DETALLE COMPLETO POR PERSONA / ORDEN (DRILL-DOWN DESDE VISTA 3.1)
+          ========================================================================= */}
+      {personaSeleccionada && (
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm no-print"
+          onClick={cerrarDetallePersona}
+        >
+          <div
+            className="w-full max-w-4xl max-h-[90vh] rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xl overflow-hidden flex flex-col"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Header fijo */}
+            <div className="p-5 border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 flex items-start justify-between gap-4 shrink-0">
+              <div className="flex items-start gap-3">
+                <div className="w-11 h-11 rounded-2xl bg-emerald-600 text-white font-black text-base flex items-center justify-center shrink-0">
+                  {String(personaSeleccionada.estudiante || 'E')
+                    .split(' ')
+                    .slice(0, 2)
+                    .map((p: string) => p[0])
+                    .join('')
+                    .toUpperCase()}
+                </div>
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <h3 className="text-base sm:text-lg font-black text-slate-900 dark:text-white">
+                      {personaSeleccionada.estudiante}
+                    </h3>
+                    <span className="px-2 py-0.5 rounded-lg text-[11px] font-mono font-bold bg-slate-200 dark:bg-slate-800 text-slate-800 dark:text-slate-200">
+                      {personaSeleccionada.codigo_orden}
+                    </span>
+                    <span
+                      className={`px-2.5 py-0.5 rounded-full text-[11px] font-extrabold border ${
+                        ESTADO_ORDEN_BADGES[personaSeleccionada.estado_orden] || ESTADO_ORDEN_BADGES.PENDIENTE
+                      }`}
+                    >
+                      {personaSeleccionada.estado_orden}
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-500 dark:text-slate-400">
+                    {personaSeleccionada.universidad} · {personaSeleccionada.carrera} ({personaSeleccionada.facultad})
+                  </p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={cerrarDetallePersona}
+                className="p-2 rounded-xl hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-500 cursor-pointer shrink-0"
+                title="Cerrar"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Cuerpo scrollable */}
+            <div className="p-5 overflow-y-auto flex-1 space-y-5">
+              {/* Resumen Financiero */}
+              {(() => {
+                const comp = Number(
+                  personaDetalleApi?.orden?.monto_comprometido ?? personaSeleccionada.monto_comprometido ?? 0,
+                );
+                const exig = Number(
+                  personaDetalleApi?.orden?.monto_exigible ?? personaSeleccionada.monto_exigible ?? 0,
+                );
+                const cobr = Number(
+                  personaDetalleApi?.orden?.monto_cobrado ?? personaSeleccionada.monto_cobrado ?? 0,
+                );
+                const saldo = Math.max(0, comp - cobr);
+                return (
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                    <div className="rounded-xl border border-slate-200 dark:border-slate-800 p-3.5 bg-slate-50/70 dark:bg-slate-950/60">
+                      <div className="text-[10px] font-bold uppercase text-slate-500">Comprometido</div>
+                      <div className="text-lg font-black font-mono text-slate-900 dark:text-white mt-0.5">
+                        {formatMoneda(comp)}
+                      </div>
+                    </div>
+                    <div className="rounded-xl border border-slate-200 dark:border-slate-800 p-3.5 bg-slate-50/70 dark:bg-slate-950/60">
+                      <div className="text-[10px] font-bold uppercase text-slate-500">Exigible Hoy</div>
+                      <div className="text-lg font-black font-mono text-sky-600 dark:text-sky-400 mt-0.5">
+                        {formatMoneda(exig)}
+                      </div>
+                    </div>
+                    <div className="rounded-xl border border-emerald-500/30 p-3.5 bg-emerald-50/50 dark:bg-emerald-950/30">
+                      <div className="text-[10px] font-bold uppercase text-emerald-700 dark:text-emerald-300">
+                        Cobrado Acreditado
+                      </div>
+                      <div className="text-lg font-black font-mono text-emerald-700 dark:text-emerald-400 mt-0.5">
+                        {formatMoneda(cobr)}
+                      </div>
+                    </div>
+                    <div className="rounded-xl border border-amber-500/30 p-3.5 bg-amber-50/50 dark:bg-amber-950/20">
+                      <div className="text-[10px] font-bold uppercase text-amber-700 dark:text-amber-300">
+                        Saldo Pendiente
+                      </div>
+                      <div className="text-lg font-black font-mono text-amber-700 dark:text-amber-400 mt-0.5">
+                        {formatMoneda(saldo)}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* Ficha Personal & Expediente */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="rounded-xl border border-slate-200 dark:border-slate-800 p-4 space-y-2.5">
+                  <h4 className="text-xs font-black uppercase tracking-wider text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
+                    <UserCheck className="w-4 h-4 text-emerald-500" />
+                    <span>Datos del Estudiante y Contacto</span>
+                  </h4>
+                  <div className="space-y-2 text-xs">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-slate-500 flex items-center gap-1.5">
+                        <Phone className="w-3.5 h-3.5" /> Teléfono / WhatsApp:
+                      </span>
+                      <span className="font-mono font-bold text-slate-900 dark:text-white">
+                        {personaSeleccionada.telefono || personaDetalleApi?.orden?.estudiante_telefono || '—'}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-slate-500 flex items-center gap-1.5">
+                        <Mail className="w-3.5 h-3.5" /> Correo electrónico:
+                      </span>
+                      <span className="font-mono text-slate-900 dark:text-white truncate max-w-[240px]">
+                        {personaSeleccionada.email || personaDetalleApi?.orden?.estudiante_email || '—'}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-slate-500 flex items-center gap-1.5">
+                        <Building2 className="w-3.5 h-3.5" /> Universidad / Facultad:
+                      </span>
+                      <span className="font-semibold text-right text-slate-900 dark:text-white">
+                        {personaSeleccionada.universidad} · {personaSeleccionada.facultad}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-slate-500 flex items-center gap-1.5">
+                        <GraduationCap className="w-3.5 h-3.5" /> Carrera profesional:
+                      </span>
+                      <span className="font-semibold text-right text-slate-900 dark:text-white">
+                        {personaSeleccionada.carrera}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-slate-500">Telegram vinculado:</span>
+                      <span className="font-mono text-sky-600 dark:text-sky-400">
+                        {personaDetalleApi?.orden?.telegram_username
+                          ? `@${personaDetalleApi.orden.telegram_username}`
+                          : personaDetalleApi?.orden?.telegram_chat_id
+                            ? `Chat ${personaDetalleApi.orden.telegram_chat_id}`
+                            : 'Sin vincular'}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="rounded-xl border border-slate-200 dark:border-slate-800 p-4 space-y-2.5">
+                  <h4 className="text-xs font-black uppercase tracking-wider text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
+                    <BookOpen className="w-4 h-4 text-sky-500" />
+                    <span>Servicio, Modalidad y Pagador</span>
+                  </h4>
+                  <div className="space-y-2 text-xs">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-slate-500">Servicio Académico:</span>
+                      <span className="font-bold text-right text-slate-900 dark:text-white">
+                        {personaSeleccionada.servicio} ({personaSeleccionada.linea_servicio})
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-slate-500">Modalidad de Pago:</span>
+                      <span className="font-bold text-right text-emerald-700 dark:text-emerald-400">
+                        {personaSeleccionada.modalidad_pago}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-slate-500">Contrato / Estado:</span>
+                      <span className="font-mono text-slate-900 dark:text-white">
+                        {personaSeleccionada.codigo_contrato} ({personaSeleccionada.estado_contrato})
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-slate-500">Responsable de Pago:</span>
+                      <span className="font-semibold text-right text-slate-900 dark:text-white">
+                        {personaDetalleApi?.responsablePago?.nombres
+                          ? `${personaDetalleApi.responsablePago.nombres} ${personaDetalleApi.responsablePago.apellidos || ''} (${personaDetalleApi.responsablePago.relacion || personaSeleccionada.tipo_responsable})`
+                          : `${personaSeleccionada.tipo_responsable || 'Estudiante'} · ${personaSeleccionada.segmento_pagador || ''}`}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-slate-500">Asesor asignado / Tiempo P02:</span>
+                      <span className="font-semibold text-right text-slate-900 dark:text-white">
+                        {personaDetalleApi?.orden?.asesor_nombre || 'Por asignar'}{' '}
+                        {personaSeleccionada.minutos_a_primer_pago != null
+                          ? `· ${personaSeleccionada.minutos_a_primer_pago} min`
+                          : ''}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {loadingPersonaDetalle ? (
+                <div className="py-6 text-center text-xs text-slate-500 flex items-center justify-center gap-2">
+                  <RefreshCw className="w-4 h-4 animate-spin text-emerald-500" />
+                  <span>Cargando cronograma de cuotas, pagos y trazabilidad en vivo...</span>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                  {/* Cronograma de Cuotas */}
+                  <div className="rounded-xl border border-slate-200 dark:border-slate-800 p-4 space-y-3">
+                    <div className="flex items-center justify-between gap-2 flex-wrap">
+                      <h4 className="text-xs font-black uppercase tracking-wider text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
+                        <Calendar className="w-4 h-4 text-amber-500" />
+                        <span>Cronograma de Cuotas ({personaDetalleApi?.cuotas?.length ?? 0})</span>
+                      </h4>
+                      {(personaDetalleApi?.cuotas || []).some((c: any) => c.estado !== 'PAGADA' && c.estado !== 'ANULADA') && (
+                        <button
+                          type="button"
+                          onClick={() => handleCancelarCuotasDesdeModal()}
+                          disabled={cancelandoCuotas}
+                          title={
+                            permiteCancelarCuotas
+                              ? 'Cancelar todas las cuotas pendientes de esta orden (RN_12)'
+                              : 'Bloqueado por regla RN_12_CANCELAR_CUOTAS_PENDIENTES'
+                          }
+                          className={`px-2.5 py-1 rounded-lg text-[10px] font-bold border transition-colors cursor-pointer disabled:opacity-50 ${
+                            permiteCancelarCuotas
+                              ? 'border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300 hover:bg-amber-100'
+                              : 'border-slate-300 dark:border-slate-700 text-slate-400'
+                          }`}
+                        >
+                          {cancelandoCuotas ? 'Cancelando...' : 'Cancelar cuotas pendientes (RN_12)'}
+                        </button>
+                      )}
+                    </div>
+                    {(personaDetalleApi?.cuotas || []).length === 0 ? (
+                      <p className="text-xs text-slate-500">Sin cuotas registradas.</p>
+                    ) : (
+                      <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
+                        {personaDetalleApi.cuotas.map((cuota: any) => {
+                          const esCuotaPendiente = cuota.estado !== 'PAGADA' && cuota.estado !== 'ANULADA';
+                          return (
+                            <div
+                              key={cuota.cuota_id}
+                              className={`flex items-center justify-between gap-2 p-2.5 rounded-xl border text-xs ${
+                                cuota.estado === 'ANULADA'
+                                  ? 'bg-rose-50/40 dark:bg-rose-950/15 border-rose-200 dark:border-rose-900/60 opacity-85'
+                                  : 'bg-slate-50 dark:bg-slate-950 border-slate-200 dark:border-slate-800'
+                              }`}
+                            >
+                              <div>
+                                <div className="font-bold text-slate-900 dark:text-white">
+                                  Cuota #{cuota.numero_cuota} ({cuota.porcentaje}%)
+                                </div>
+                                <div className="text-[11px] text-slate-500">
+                                  {cuota.condicion || 'Cuota programada'} · Vence:{' '}
+                                  {cuota.fecha_vencimiento
+                                    ? String(cuota.fecha_vencimiento).slice(0, 10)
+                                    : '—'}
+                                </div>
+                              </div>
+                              <div className="text-right flex items-center gap-2">
+                                <div>
+                                  <div className="font-mono font-bold text-slate-900 dark:text-white">
+                                    {formatMoneda(cuota.monto_programado)}
+                                  </div>
+                                  <span
+                                    className={`inline-flex px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                                      cuota.estado === 'PAGADA'
+                                        ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300'
+                                        : cuota.estado === 'ANULADA'
+                                          ? 'bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300'
+                                          : cuota.estado === 'ENLACE_ENVIADO' || cuota.estado === 'EXIGIBLE'
+                                            ? 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300'
+                                            : 'bg-slate-200 text-slate-700 dark:bg-slate-800 dark:text-slate-300'
+                                    }`}
+                                  >
+                                    {cuota.estado}
+                                  </span>
+                                </div>
+                                {esCuotaPendiente && (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleCancelarCuotasDesdeModal(Number(cuota.cuota_id))}
+                                    disabled={cancelandoCuotas}
+                                    title={
+                                      permiteCancelarCuotas
+                                        ? `Cancelar Cuota #${cuota.numero_cuota} (RN_12)`
+                                        : 'Bloqueado por regla RN_12_CANCELAR_CUOTAS_PENDIENTES'
+                                    }
+                                    className={`px-2 py-1 rounded-lg text-[10px] font-bold border transition-colors cursor-pointer disabled:opacity-50 ${
+                                      permiteCancelarCuotas
+                                        ? 'border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300 hover:bg-amber-100'
+                                        : 'border-slate-300 dark:border-slate-700 text-slate-400'
+                                    }`}
+                                  >
+                                    Cancelar cuota
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Pagos y Alertas */}
+                  <div className="rounded-xl border border-slate-200 dark:border-slate-800 p-4 space-y-3">
+                    <h4 className="text-xs font-black uppercase tracking-wider text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
+                      <Receipt className="w-4 h-4 text-emerald-500" />
+                      <span>Pagos Acreditados ({personaDetalleApi?.pagos?.length ?? 0})</span>
+                    </h4>
+                    {(personaDetalleApi?.pagos || []).length === 0 ? (
+                      <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-xs text-slate-500 flex items-center gap-2">
+                        <AlertCircle className="w-4 h-4 text-amber-500 shrink-0" />
+                        <span>Esta persona aún no registra pagos confirmados en pasarela o caja.</span>
+                      </div>
+                    ) : (
+                      <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
+                        {personaDetalleApi.pagos.map((pago: any) => (
+                          <div
+                            key={pago.pago_id}
+                            className="flex items-center justify-between gap-2 p-2.5 rounded-xl bg-emerald-50/50 dark:bg-emerald-950/20 border border-emerald-200 dark:border-emerald-900/60 text-xs"
+                          >
+                            <div>
+                              <div className="font-bold text-slate-900 dark:text-white">
+                                {pago.medio_pago_nombre || pago.metodo || 'Pasarela'} · Ref:{' '}
+                                <span className="font-mono">{pago.referencia || '—'}</span>
+                              </div>
+                              <div className="text-[11px] text-slate-500">
+                                {formatFechaCorta(pago.fecha_confirmacion)} · Comisión:{' '}
+                                {formatMoneda(pago.comision_pasarela)}
+                              </div>
+                            </div>
+                            <div className="text-right flex items-center gap-2">
+                              <div>
+                                <div className="font-mono font-black text-emerald-700 dark:text-emerald-400">
+                                  {formatMoneda(pago.monto_pagado)}
+                                </div>
+                                <span
+                                  className={`text-[10px] font-bold ${
+                                    pago.estado === 'ANULADO'
+                                      ? 'text-rose-600 dark:text-rose-400'
+                                      : 'text-emerald-700 dark:text-emerald-300'
+                                  }`}
+                                >
+                                  {pago.estado}
+                                </span>
+                              </div>
+                              {pago.estado === 'CONFIRMADO' && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleAnularPagoDesdeModal(Number(pago.pago_id))}
+                                  disabled={anulandoPagoId === Number(pago.pago_id)}
+                                  title={
+                                    permiteAnularPago
+                                      ? 'Anular este pago confirmado (RN_11)'
+                                      : 'Bloqueado por regla RN_11_PERMITIR_ANULACION_PAGO'
+                                  }
+                                  className={`px-2 py-1 rounded-lg text-[10px] font-bold border transition-colors cursor-pointer ${
+                                    permiteAnularPago
+                                      ? 'border-rose-300 dark:border-rose-700 bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-300 hover:bg-rose-100'
+                                      : 'border-slate-300 dark:border-slate-700 text-slate-400'
+                                  }`}
+                                >
+                                  {anulandoPagoId === Number(pago.pago_id) ? 'Anulando...' : 'Anular'}
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {(personaSeleccionada.tipo_alerta || (personaDetalleApi?.alertas || []).length > 0) && (
+                      <div className="p-2.5 rounded-xl bg-amber-50/70 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-900/60 text-[11px] text-amber-900 dark:text-amber-200">
+                        <strong>Trazabilidad de Alertas IA:</strong>{' '}
+                        {personaSeleccionada.tipo_alerta || personaDetalleApi?.alertas?.[0]?.tipo} ·{' '}
+                        {personaSeleccionada.secuencia_alerta || personaDetalleApi?.alertas?.[0]?.secuencia}{' '}
+                        {personaSeleccionada.alerta_recuperada ? '· Recuperado ≤72h' : ''}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Footer fijo */}
+            <div className="p-4 border-t border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 flex flex-wrap items-center justify-between gap-2 shrink-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <Link
+                  href={`/checkout/${personaSeleccionada.codigo_orden}`}
+                  target="_blank"
+                  className="px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-bold text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 inline-flex items-center gap-1.5"
+                >
+                  <ExternalLink className="w-3.5 h-3.5" />
+                  <span>Abrir Checkout</span>
+                </Link>
+                <Link
+                  href="/admin/customers"
+                  className="px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-bold text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 inline-flex items-center gap-1.5"
+                >
+                  <BookOpen className="w-3.5 h-3.5" />
+                  <span>Hitos & Asesor</span>
+                </Link>
+                <Link
+                  href="/admin/payers"
+                  className="px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-bold text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 inline-flex items-center gap-1.5"
+                >
+                  <CreditCard className="w-3.5 h-3.5" />
+                  <span>Órdenes & Pasarela</span>
+                </Link>
+              </div>
+
+              <button
+                type="button"
+                onClick={cerrarDetallePersona}
+                className="px-4 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 dark:bg-white dark:hover:bg-slate-100 text-white dark:text-slate-950 text-xs font-extrabold cursor-pointer"
+              >
+                Cerrar detalle
+              </button>
             </div>
           </div>
         </div>

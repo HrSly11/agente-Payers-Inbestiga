@@ -106,7 +106,7 @@ export class OpenAiVoiceService {
     userKey: string,
     contextPrompt: string,
     mensajeUsuario: string,
-    opts?: { voz?: boolean },
+    opts?: { voz?: boolean; model?: string },
   ): Promise<string> {
     const system =
       `${contextPrompt}\n\n` +
@@ -115,10 +115,20 @@ export class OpenAiVoiceService {
       `- Usa estrictamente TEXTO PLANO: NO uses Markdown, asteriscos (*), almohadillas (#), viñetas ni listas.\n` +
       `- PROHIBIDO mencionar siglas técnicas internas como "RN-01", "RN-02", "RN-03", "RN-05", "RN-09", "DEVOLVER_A_LEADS" o "FASE PAYERS". Trata siempre al estudiante con calidez humana y lenguaje profesional natural.` +
       (opts?.voz ? `\n- ${VOICE_BREVITY}` : '');
-    return this.chat(userKey, system, mensajeUsuario, 'LLM PAYERS gpt-4o-mini');
+    const selectedModel =
+      opts?.model && (opts.model.startsWith('gpt-') || opts.model.startsWith('o'))
+        ? opts.model
+        : LLM_MODEL;
+    return this.chat(userKey, system, mensajeUsuario, `LLM PAYERS ${selectedModel}`, selectedModel);
   }
 
-  private async chat(userKey: string, system: string, userText: string, label: string): Promise<string> {
+  private async chat(
+    userKey: string,
+    system: string,
+    userText: string,
+    label: string,
+    modelOverride?: string,
+  ): Promise<string> {
     const now = Date.now();
     const prevTime = this.lastActive.get(userKey) || 0;
     let past = this.history.get(userKey) || [];
@@ -133,7 +143,7 @@ export class OpenAiVoiceService {
 
     const completion = await this.timed(label, () =>
       this.client!.chat.completions.create({
-        model: LLM_MODEL,
+        model: modelOverride || LLM_MODEL,
         max_tokens: 250,
         messages: [{ role: 'system', content: system }, ...past, { role: 'user', content: userText }],
       }),

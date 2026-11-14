@@ -1021,16 +1021,19 @@ export default function CustomersPage() {
                             {trazabilidad.cuotasPago.map((cp: any) => {
                               const pagada = cp.estado === 'PAGADA';
                               const espera = cp.estado === 'ESPERA_HITO';
-                              const exigible = cp.estado === 'EXIGIBLE';
+                              const exigible = cp.estado === 'EXIGIBLE' || cp.estado === 'ENLACE_ENVIADO';
+                              const anulada = cp.estado === 'ANULADA';
                               return (
                                 <div
                                   key={cp.cuota_id}
                                   className={`p-3 rounded-xl border text-xs flex flex-col justify-between gap-2 ${
                                     pagada
                                       ? 'bg-emerald-50/70 dark:bg-emerald-950/20 border-emerald-300 dark:border-emerald-800'
-                                      : espera
-                                        ? 'bg-amber-50/70 dark:bg-amber-950/20 border-amber-300 dark:border-amber-800'
-                                        : 'bg-sky-50/70 dark:bg-sky-950/20 border-sky-300 dark:border-sky-800'
+                                      : anulada
+                                        ? 'bg-rose-50/60 dark:bg-rose-950/20 border-rose-300 dark:border-rose-800 opacity-85'
+                                        : espera
+                                          ? 'bg-amber-50/70 dark:bg-amber-950/20 border-amber-300 dark:border-amber-800'
+                                          : 'bg-sky-50/70 dark:bg-sky-950/20 border-sky-300 dark:border-sky-800'
                                   }`}
                                 >
                                   <div className="space-y-1">
@@ -1042,9 +1045,11 @@ export default function CustomersPage() {
                                         className={`px-2 py-0.5 rounded-full text-[10px] font-black ${
                                           pagada
                                             ? 'bg-emerald-200 text-emerald-900 dark:bg-emerald-900 dark:text-emerald-200'
-                                            : espera
-                                              ? 'bg-amber-200 text-amber-900 dark:bg-amber-900 dark:text-amber-200'
-                                              : 'bg-sky-200 text-sky-900 dark:bg-sky-900 dark:text-sky-200'
+                                            : anulada
+                                              ? 'bg-rose-200 text-rose-900 dark:bg-rose-900 dark:text-rose-200'
+                                              : espera
+                                                ? 'bg-amber-200 text-amber-900 dark:bg-amber-900 dark:text-amber-200'
+                                                : 'bg-sky-200 text-sky-900 dark:bg-sky-900 dark:text-sky-200'
                                         }`}
                                       >
                                         {cp.estado}
@@ -1063,7 +1068,7 @@ export default function CustomersPage() {
                                     )}
                                   </div>
 
-                                  {espera && (
+                                  {!anulada && espera && (
                                     <button
                                       type="button"
                                       onClick={() => handleAprobarHitoCuota(cp.numero_cuota)}
@@ -1075,7 +1080,7 @@ export default function CustomersPage() {
                                         : `✓ Aprobar hito y habilitar Cuota #${cp.numero_cuota}`}
                                     </button>
                                   )}
-                                  {exigible && cp.numero_cuota > 1 && (
+                                  {!anulada && exigible && cp.numero_cuota > 1 && (
                                     <button
                                       type="button"
                                       onClick={() => handleRevertirHitoCuota(cp.numero_cuota)}

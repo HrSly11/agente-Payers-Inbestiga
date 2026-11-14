@@ -83,10 +83,10 @@ export default function AgentConfigPage() {
       });
       setConfig(
         cfg || {
-          proveedorIA: 'GEMINI',
-          modelo: 'gemini-1.5-flash',
+          proveedorIA: 'OPENAI',
+          modelo: 'gpt-4o-mini',
           promptSistema:
-            'Eres el Agente Especialista de Cobranza y Activación Académica (PAYERS v2.0) de INBESTIGA.TESIS. Tu misión es gestionar el cobro de órdenes provenientes de HANDOFF_LEADS, facilitar enlaces oficiales de Mercado Pago Checkout Pro, estructurar cuotas sobre el saldo comprometido y activar el servicio académico tras el primer pago verificado.\nREGLAS ESTRICTAS DE PAYERS:\n1. RN-01 (Cero Alucinación): Jamás des por confirmado un pago por dichos del chat; verifica determinísticamente en PAGO y EVENTO_WEBHOOK.\n2. RN-02 (Precio Congelado): Prohibido negociar precios o descuentos en PAYERS. Si el estudiante solicita rebaja sobre el monto comprometido, escala y devuelve el caso a LEADS.\n3. RN-03 (Cuotas): Permite fraccionar en 3 cuotas (30/40/30) o reestructurar saldos pendientes hasta en 6 cuotas sin alterar el precio final.\n4. RN-04 (Activación): Al acreditarse la Cuota 1, activa automáticamente PAYER + CUSTOMER y asigna asesor especialista por balanceo de carga.\n5. RN-05 (Medios de Pago): Emite enlaces oficiales de Mercado Pago Checkout Pro; para montos mayores a S/ 500 indica pasarela con tarjeta.',
+            'Eres el Asesor Virtual Especialista de Cobranza y Activación Académica de INBESTIGA.TESIS. Tu misión es acompañar cordialmente al estudiante que ya aceptó su cotización, guiarlo a completar su pago por los canales oficiales (Mercado Pago Checkout Pro o transferencia bancaria verificada), explicarle con claridad sus facilidades de pago y acompañar la activación de su servicio académico. Comunícate siempre con calidez humana, claridad ejecutiva y respeto estricto de las políticas y reglas vigentes configuradas en el sistema.',
           tono: 'Profesional, empático, financiero-académico y determinístico',
           estilo: 'Especialista de Cobranza y Activación PAYERS v2.0',
           permitirNegociacion: false,
@@ -115,8 +115,9 @@ export default function AgentConfigPage() {
       const checked = (e.target as HTMLInputElement).checked;
       setConfig((prev: any) => ({ ...prev, [name]: checked }));
     } else if (name === 'proveedorIA') {
-      let defaultModel = config?.modelo || 'gemini-3.6-flash';
-      if (value === 'GEMINI') defaultModel = 'gemini-3.6-flash';
+      let defaultModel = config?.modelo || 'gpt-4o-mini';
+      if (value === 'OPENAI') defaultModel = 'gpt-4o-mini';
+      else if (value === 'GEMINI') defaultModel = 'gemini-2.5-flash';
       else if (value === 'GROQ') defaultModel = 'openai/gpt-oss-120b';
       else if (value === 'OPENROUTER') defaultModel = 'google/gemma-4-31b-it:free';
       else if (value === 'GROK') defaultModel = 'grok-2-mini';
@@ -542,19 +543,22 @@ export default function AgentConfigPage() {
                   onChange={handleChangeConfig}
                   className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700/80 rounded-xl px-3 py-2 text-xs text-slate-900 dark:text-white font-bold focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
                 >
-                  <option value="GEMINI">Google Gemini (Gemini 3.6 Flash)</option>
-                  <option value="GROQ">Groq Cloud (LPU Ultra-rápido: GPT-OSS 120B / Qwen)</option>
-                  <option value="OPENROUTER">OpenRouter (Modelos Libres Multi-Proveedor)</option>
-                  <option value="GROK">xAI Grok (Grok 2 / Grok Beta)</option>
+                  <option value="OPENAI">OpenAI (Primario PAYERS) — Fallback automático a Google Gemini</option>
+                  <option value="GEMINI">Google Gemini (Primario) — Fallback automático a OpenAI</option>
+                  <option value="GROQ">Groq Cloud (Alternativo experimental)</option>
+                  <option value="OPENROUTER">OpenRouter (Alternativo multi-proveedor)</option>
+                  <option value="GROK">xAI Grok (Alternativo)</option>
                 </select>
                 <p className="text-[10px] text-slate-500 dark:text-slate-400">
-                  Abstracción desacoplada de backend (multi-proveedor)
+                  {config.proveedorIA === 'GEMINI'
+                    ? 'Motor principal: Google Gemini · Contingencia automática: OpenAI gpt-4o-mini'
+                    : 'Motor principal activo en PAYERS: OpenAI (gpt-4o-mini) · Contingencia automática: Google Gemini (gemini-2.5-flash)'}
                 </p>
               </div>
 
               <div className="space-y-1.5">
                 <label className="text-xs font-semibold text-slate-700 dark:text-slate-300">
-                  Identificador del Modelo
+                  Identificador del Modelo Primario
                 </label>
                 <input
                   type="text"
@@ -563,68 +567,189 @@ export default function AgentConfigPage() {
                   onChange={handleChangeConfig}
                   className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700/80 rounded-xl px-3 py-2 text-xs text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all font-mono"
                 />
+                <p className="text-[10px] text-sky-600 dark:text-sky-400 font-semibold">
+                  {config.proveedorIA === 'GEMINI'
+                    ? 'Fallback automático si falla Gemini: OpenAI gpt-4o-mini'
+                    : 'Fallback automático si falla OpenAI: Google Gemini (gemini-2.5-flash)'}
+                </p>
               </div>
+            </div>
+
+            <div className="rounded-xl bg-sky-500/10 border border-sky-500/30 px-3.5 py-2.5 flex flex-wrap items-center justify-between gap-2 text-[11px]">
+              <div className="flex items-center gap-2 text-sky-900 dark:text-sky-200 font-semibold">
+                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                <span>
+                  Enrutamiento real en PAYERS:{' '}
+                  <strong>
+                    {config.proveedorIA === 'GEMINI'
+                      ? `Google Gemini (${config.modelo || 'gemini-2.5-flash'}) ➔ OpenAI (gpt-4o-mini)`
+                      : `OpenAI (${config.modelo || 'gpt-4o-mini'}) ➔ Google Gemini (gemini-2.5-flash)`}
+                  </strong>
+                </span>
+              </div>
+              <span className="font-mono text-[10px] px-2 py-0.5 rounded bg-sky-500/20 text-sky-700 dark:text-sky-300 font-bold">
+                Resiliencia Dual Activa
+              </span>
             </div>
           </div>
 
-          {/* Row 2: Prompt del Sistema PAYERS */}
+          {/* Row 2: Prompt del Sistema PAYERS (Solo comportamiento; las reglas viven en SQL Server REGLA_NEGOCIO) */}
           <div className="glass-panel p-5 sm:p-6 rounded-2xl border border-slate-200 dark:border-slate-800 space-y-4 shadow-sm bg-slate-900/60">
             <h2 className="font-heading text-xs font-bold uppercase tracking-wider text-sky-700 dark:text-sky-400 flex items-center gap-2 border-b border-slate-200 dark:border-slate-800 pb-2.5">
               <Sparkles className="w-4 h-4" />
-              <span>2. Prompt del Sistema (Instrucciones Maestras de Cobranza & Activación PAYERS v2.0)</span>
+              <span>2. Prompt del Sistema (Rol y Personalidad Conversacional — Sin Reglas Hardcodeadas)</span>
             </h2>
 
             <div className="space-y-1.5">
               <textarea
                 name="promptSistema"
-                rows={8}
+                rows={5}
                 value={config.promptSistema}
                 onChange={handleChangeConfig}
-                placeholder="Instrucciones del sistema para el agente de cobranza PAYERS..."
+                placeholder="Define aquí únicamente el rol, tono y comportamiento conversacional del agente..."
                 className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700/80 rounded-xl p-3.5 text-xs text-slate-800 dark:text-slate-200 font-mono leading-relaxed focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
               />
               <p className="text-[10px] text-slate-500 dark:text-slate-400">
-                * El Agente PAYERS opera con guardarraíles determinísticos (RN-01 a RN-10): no negocia precios (RN-02), verifica pagos en PAGO/EVENTO_WEBHOOK y emite preferencias oficiales de Mercado Pago Checkout Pro.
+                Aquí solo se define la identidad, empatía y estilo de respuesta del agente. Todas las reglas operativas se leen e inyectan automáticamente en tiempo real desde{' '}
+                <code className="text-sky-400">INBESTIGA_TESIS.dbo.REGLA_NEGOCIO</code>.
               </p>
+            </div>
+
+            {/* Vista previa en tiempo real de las reglas de negocio inyectadas desde BD */}
+            <div className="rounded-xl border border-slate-700/80 bg-slate-950/70 p-3.5 space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[11px] font-bold uppercase tracking-wider text-emerald-400 flex items-center gap-1.5">
+                  <Shield className="w-3.5 h-3.5" />
+                  Reglas de Negocio Inyectadas Automáticamente desde BD ({rules.filter((r) => r.activo).length} activas)
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('rules')}
+                  className="text-[10px] font-bold text-sky-400 hover:text-sky-300 underline cursor-pointer"
+                >
+                  Gestionar reglas en Pestaña 1 →
+                </button>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-1.5 max-h-48 overflow-y-auto pr-1">
+                {rules
+                  .filter((r) => r.activo)
+                  .map((r) => (
+                    <div
+                      key={r.codigo}
+                      className="flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg bg-slate-900 border border-slate-800 text-[11px]"
+                    >
+                      <div className="min-w-0">
+                        <span className="font-mono font-bold text-sky-400 text-[10px] block truncate">
+                          [{r.modulo}] {r.codigo}
+                        </span>
+                        <span className="text-slate-200 font-medium block truncate">{r.nombre}</span>
+                      </div>
+                      <span className="shrink-0 font-mono font-bold px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+                        {r.valor}
+                      </span>
+                    </div>
+                  ))}
+              </div>
             </div>
           </div>
 
-          {/* Row 3: Guardarraíles Operativos PAYERS */}
+          {/* Row 3: Guardarraíles Operativos Leídos en Vivo desde SQL Server */}
           <div className="glass-panel p-5 sm:p-6 rounded-2xl border border-slate-200 dark:border-slate-800 space-y-4 shadow-sm bg-slate-900/60">
             <h2 className="font-heading text-xs font-bold uppercase tracking-wider text-sky-700 dark:text-sky-400 flex items-center gap-2 border-b border-slate-200 dark:border-slate-800 pb-2.5">
               <Sliders className="w-4 h-4" />
-              <span>3. Guardarraíles Operativos de Cobranza & Fraccionamiento (PAYERS)</span>
+              <span>3. Guardarraíles Operativos Activos (Sincronizados con REGLA_NEGOCIO)</span>
             </h2>
 
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-              <div className="space-y-1.5">
-                <label className="text-xs font-semibold text-slate-700 dark:text-slate-300">
-                  Política de Precio (RN-02)
-                </label>
-                <div className="px-3 py-2 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs font-bold">
-                  0% Descuento (Congelado desde LEADS)
+            {(() => {
+              const findRule = (codigo: string) => rules.find((r) => r.codigo === codigo && r.activo);
+              const rDesc = findRule('RN_02_MAX_DESCUENTO_PCT');
+              const rYape = findRule('RN_05_TOPE_YAPE_PLIN_PEN');
+              const rCuotas = findRule('RN_03_MAX_CUOTAS_REESTRUCTURACION');
+              const rAnular = findRule('RN_11_PERMITIR_ANULACION_PAGO');
+              const rCancelarCuotas = findRule('RN_12_CANCELAR_CUOTAS_PENDIENTES');
+              const anulacionActiva =
+                Boolean(rAnular) && ['true', '1', 'si', 'sí'].includes(String(rAnular?.valor || '').toLowerCase());
+              const cancelarCuotasActiva =
+                Boolean(rCancelarCuotas) &&
+                ['true', '1', 'si', 'sí'].includes(String(rCancelarCuotas?.valor || '').toLowerCase());
+              return (
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-semibold text-slate-700 dark:text-slate-300">
+                      Descuento Máximo (RN_02)
+                    </label>
+                    <div className="px-3 py-2 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs font-bold font-mono">
+                      {rDesc ? `${rDesc.valor}% autorizado` : 'Inactivo (0% descuento)'}
+                    </div>
+                    <p className="text-[10px] text-slate-500 dark:text-slate-400">
+                      En PAYERS el precio comprometido permanece congelado desde LEADS.
+                    </p>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-semibold text-slate-700 dark:text-slate-300">
+                      Tope Cuotas (RN_03)
+                    </label>
+                    <div className="px-3 py-2 rounded-xl bg-sky-500/10 border border-sky-500/30 text-sky-300 text-xs font-bold font-mono">
+                      {rCuotas ? `Hasta ${rCuotas.valor} cuotas` : 'Sin fraccionamiento extra'}
+                    </div>
+                    <p className="text-[10px] text-slate-500 dark:text-slate-400">
+                      Aplica al instante en reestructuración conversacional y cronogramas.
+                    </p>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-semibold text-slate-700 dark:text-slate-300">
+                      Tope Yape / Plin (RN_05)
+                    </label>
+                    <div className="px-3 py-2 rounded-xl bg-purple-500/10 border border-purple-500/30 text-purple-300 text-xs font-bold font-mono">
+                      {rYape ? `S/ ${Number(rYape.valor).toFixed(2)}` : 'Sin tope activo'}
+                    </div>
+                    <p className="text-[10px] text-slate-500 dark:text-slate-400">
+                      Superado este umbral, el bot emite enlace con tarjeta o transferencia.
+                    </p>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-semibold text-slate-700 dark:text-slate-300">
+                      Anular Pago Confirmado (RN_11)
+                    </label>
+                    <div
+                      className={`px-3 py-2 rounded-xl text-xs font-bold font-mono border ${
+                        anulacionActiva
+                          ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
+                          : 'bg-rose-500/10 border-rose-500/30 text-rose-300'
+                      }`}
+                    >
+                      {anulacionActiva ? 'HABILITADO EN VIVO' : 'BLOQUEADO POR REGLA'}
+                    </div>
+                    <p className="text-[10px] text-slate-500 dark:text-slate-400">
+                      Reversa contable en Caja sobre pagos acreditados en Boletas.
+                    </p>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-semibold text-slate-700 dark:text-slate-300">
+                      Cancelar Cuotas Pend. (RN_12)
+                    </label>
+                    <div
+                      className={`px-3 py-2 rounded-xl text-xs font-bold font-mono border ${
+                        cancelarCuotasActiva
+                          ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
+                          : 'bg-rose-500/10 border-rose-500/30 text-rose-300'
+                      }`}
+                    >
+                      {cancelarCuotasActiva ? 'HABILITADO EN VIVO' : 'BLOQUEADO POR REGLA'}
+                    </div>
+                    <p className="text-[10px] text-slate-500 dark:text-slate-400">
+                      Anula cuotas pendientes futuras por desistimiento sin tocar lo ya pagado.
+                    </p>
+                  </div>
                 </div>
-                <p className="text-[10px] text-slate-500 dark:text-slate-400">
-                  Si el estudiante pide rebaja, PAYERS devuelve la orden a LEADS.
-                </p>
-              </div>
+              );
+            })()}
 
-              <div className="space-y-1.5">
-                <label className="text-xs font-semibold text-slate-700 dark:text-slate-300">
-                  Tope Cuotas Reestructuración (RN-03)
-                </label>
-                <input
-                  type="number"
-                  name="maxCuotasNegociables"
-                  value={config.maxCuotasNegociables}
-                  onChange={handleChangeConfig}
-                  className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700/80 rounded-xl px-3 py-2 text-xs text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
-                />
-                <p className="text-[10px] text-slate-500 dark:text-slate-400">
-                  Fraccionamiento máximo del saldo comprometido (3 o 6 cuotas).
-                </p>
-              </div>
-
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2 border-t border-slate-800/70">
               <div className="space-y-1.5">
                 <label className="text-xs font-semibold text-slate-700 dark:text-slate-300">
                   Ventana Horaria de Cobranza (Lima)
@@ -647,6 +772,21 @@ export default function AgentConfigPage() {
                 </div>
                 <p className="text-[10px] text-slate-500 dark:text-slate-400">
                   Horario permitido para disparo de recordatorios automáticos.
+                </p>
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-slate-700 dark:text-slate-300">
+                  Tono & Estilo Conversacional
+                </label>
+                <input
+                  type="text"
+                  name="tono"
+                  value={config.tono || ''}
+                  onChange={handleChangeConfig}
+                  className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700/80 rounded-xl px-3 py-2 text-xs text-slate-900 dark:text-white"
+                />
+                <p className="text-[10px] text-slate-500 dark:text-slate-400">
+                  Se inyecta directamente junto al Prompt del Sistema.
                 </p>
               </div>
             </div>

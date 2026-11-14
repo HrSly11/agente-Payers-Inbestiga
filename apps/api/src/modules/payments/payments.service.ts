@@ -79,14 +79,26 @@ export class PaymentsService {
           cuotaEnEspera ||
           cuotasRows.find((c) => c.estado !== 'PAGADA' && c.estado !== 'ANULADA') ||
           cuotasRows[0];
-        const bloqueadaPorHito = Boolean(!cuotaExigible && cuotaEnEspera && ord.orden_estado !== 'PAGADA');
+        const cuotasAnuladas = cuotasRows.filter((c) => c.estado === 'ANULADA');
+        const cuotasPendientesRestantes = cuotasRows.filter(
+          (c) => c.estado !== 'PAGADA' && c.estado !== 'ANULADA',
+        );
+        const ordenAnulada =
+          ord.orden_estado === 'ANULADA' ||
+          (cuotasRows.length > 0 && cuotasAnuladas.length > 0 && cuotasPendientesRestantes.length === 0);
+        const montoAnulado = cuotasAnuladas.reduce((acc, c) => acc + Number(c.monto_programado || 0), 0);
+        const bloqueadaPorHito = Boolean(!ordenAnulada && !cuotaExigible && cuotaEnEspera && ord.orden_estado !== 'PAGADA');
         const cuotasPagadas = cuotasRows.filter((c) => c.estado === 'PAGADA').length;
         const montoPagado = cuotasRows
           .filter((c) => c.estado === 'PAGADA')
           .reduce((acc, c) => acc + Number(c.monto_programado || 0), 0);
         const numCuotas = cuotasRows.length || Number(ord.numero_cuotas || 1);
         const totalComprometido = Number(ord.monto_comprometido);
-        const montoCuotaActiva = cuotaActiva ? Number(cuotaActiva.monto_programado) : totalComprometido;
+        const montoCuotaActiva = ordenAnulada
+          ? 0
+          : cuotaActiva
+            ? Number(cuotaActiva.monto_programado)
+            : totalComprometido;
 
         return {
           id: ord.codigo_orden,
@@ -99,7 +111,7 @@ export class PaymentsService {
           cuotas: numCuotas,
           plazoEntregaDias: Number(ord.plazo_dias || 90),
           fechaExpiracion: new Date(Date.now() + 48 * 3600 * 1000).toISOString(),
-          estado: ord.orden_estado === 'PAGADA' ? 'ACEPTADA' : 'PENDIENTE',
+          estado: ordenAnulada ? 'ANULADA' : ord.orden_estado === 'PAGADA' ? 'ACEPTADA' : 'PENDIENTE',
           estudiante: {
             id: String(ord.contacto_id),
             nombres: `${ord.nombres} ${ord.apellidos}`.trim(),
@@ -109,7 +121,7 @@ export class PaymentsService {
             carrera: 'Ingeniería de Sistemas',
           },
           pagoId: String(ord.orden_pago_id),
-          pagoEstado: ord.orden_estado === 'PAGADA' ? 'CONFIRMADO' : 'PENDIENTE',
+          pagoEstado: ord.orden_estado === 'PAGADA' ? 'CONFIRMADO' : ordenAnulada ? 'ANULADA' : 'PENDIENTE',
           proveedorPago: (process.env.PAYMENT_PROVIDER || 'MERCADOPAGO').toUpperCase(),
           mercadoPagoPublicKey: process.env.MERCADOPAGO_PUBLIC_KEY || '',
           planCuotas: {
@@ -118,10 +130,13 @@ export class PaymentsService {
             totalContrato: totalComprometido,
             montoPorCuota: montoCuotaActiva,
             cuotaActualNumero: Number(cuotaActiva?.numero_cuota || 1),
-            cuotaActualEstado: cuotaActiva?.estado || 'EXIGIBLE',
-            cuotaActualCondicion: cuotaActiva?.condicion || 'Cuota inicial',
+            cuotaActualEstado: ordenAnulada ? 'ANULADA' : cuotaActiva?.estado || 'EXIGIBLE',
+            cuotaActualCondicion: ordenAnulada ? 'Cuotas pendientes canceladas' : cuotaActiva?.condicion || 'Cuota inicial',
             cuotaActualVencimiento: cuotaActiva?.fecha_vencimiento || null,
             bloqueadaPorHito,
+            ordenAnulada,
+            montoAnulado,
+            cuotasAnuladas: cuotasAnuladas.length,
             cuotasPagadas,
             montoPagado,
             cuotasDetalle: cuotasRows.map((c) => ({
@@ -975,6 +990,7 @@ export class PaymentsService {
         pg.estado,
         op.codigo_orden,
         op.monto_comprometido,
+        op.estado AS orden_estado,
         mp.numero_cuotas,
         cp.numero_cuota,
         s.codigo AS servicio_codigo,
@@ -997,6 +1013,21 @@ export class PaymentsService {
           FROM INBESTIGA_TESIS.dbo.CUOTA_PAGO c2
           WHERE c2.orden_pago_id = op.orden_pago_id AND c2.estado = 'PAGADA'
         ), 0) AS cuotas_pagadas_orden,
+        ISNULL((
+          SELECT COUNT(*)
+          FROM INBESTIGA_TESIS.dbo.CUOTA_PAGO c3
+          WHERE c3.orden_pago_id = op.orden_pago_id AND c3.estado IN ('EXIGIBLE', 'ESPERA_HITO', 'ENLACE_ENVIADO', 'VENCIDA')
+        ), 0) AS cuotas_pendientes_orden,
+        ISNULL((
+          SELECT COUNT(*)
+          FROM INBESTIGA_TESIS.dbo.CUOTA_PAGO c4
+          WHERE c4.orden_pago_id = op.orden_pago_id AND c4.estado = 'ANULADA'
+        ), 0) AS cuotas_anuladas_orden,
+        ISNULL((
+          SELECT SUM(c5.monto_programado)
+          FROM INBESTIGA_TESIS.dbo.CUOTA_PAGO c5
+          WHERE c5.orden_pago_id = op.orden_pago_id AND c5.estado = 'ANULADA'
+        ), 0) AS monto_anulado_orden,
         ISNULL((
           SELECT TOP 1 a.nombre
           FROM INBESTIGA_TESIS.dbo.PAYER py
@@ -1027,7 +1058,14 @@ export class PaymentsService {
       const totalContrato = Number(r.monto_comprometido || r.monto_pagado);
       const totalAbonado = Number(r.total_abonado_orden || r.monto_pagado);
       const cuotasPagadas = Number(r.cuotas_pagadas_orden || 1);
-      const saldoPendiente = Math.max(0, totalContrato - totalAbonado);
+      const cuotasPendientes = Number(r.cuotas_pendientes_orden || 0);
+      const cuotasAnuladas = Number(r.cuotas_anuladas_orden || 0);
+      const montoAnulado = Number(r.monto_anulado_orden || 0);
+      const ordenAnulada =
+        r.orden_estado === 'ANULADA' || (cuotasPendientes === 0 && cuotasAnuladas > 0);
+      const saldoPendiente = ordenAnulada
+        ? 0
+        : Math.max(0, Number((totalContrato - totalAbonado - montoAnulado).toFixed(2)));
       const esPlanCuotas = cuotasTotal > 1;
       const metodoPago =
         Number(r.medio_pago_id) === 3
@@ -1039,6 +1077,8 @@ export class PaymentsService {
       return {
         id: `tesis-pago-${r.pago_id}`,
         tesisPagoId: Number(r.pago_id),
+        ordenPagoId: Number(r.orden_pago_id),
+        ordenEstado: r.orden_estado || 'PARCIAL',
         serieNumero: `B001-${String(r.pago_id).padStart(6, '0')}`,
         monto: Number(r.monto_pagado),
         moneda: 'PEN',
@@ -1077,13 +1117,20 @@ export class PaymentsService {
           totalContrato,
           totalAbonado,
           cuotasPagadas,
+          cuotasPendientes,
+          cuotasAnuladas,
+          montoAnulado,
+          ordenAnulada,
+          ordenEstado: r.orden_estado || 'PARCIAL',
           saldoPendiente,
-          estadoTexto: esPlanCuotas
-            ? saldoPendiente <= 0
-              ? `${cuotasTotal}/${cuotasTotal} Cuotas Pagadas (Cancelado)`
-              : `Cuota ${cuotasPagadas}/${cuotasTotal} Pagada (Saldo: S/ ${saldoPendiente.toFixed(2)})`
-            : 'Contado (100% Cancelado)',
-          estaCanceladoTotal: saldoPendiente <= 0,
+          estadoTexto: ordenAnulada
+            ? `${cuotasPagadas}/${cuotasTotal} Pagada (${cuotasAnuladas} pendiente(s) cancelada(s))`
+            : esPlanCuotas
+              ? saldoPendiente <= 0
+                ? `${cuotasTotal}/${cuotasTotal} Cuotas Pagadas (Cancelado)`
+                : `Cuota ${cuotasPagadas}/${cuotasTotal} Pagada (Saldo: S/ ${saldoPendiente.toFixed(2)})`
+              : 'Contado (100% Cancelado)',
+          estaCanceladoTotal: saldoPendiente <= 0 && !ordenAnulada,
           cuotaActual: Number(r.numero_cuota || cuotasPagadas || 1),
           cronograma: Array.from({ length: cuotasTotal }, (_, idx) => {
             const num = idx + 1;
