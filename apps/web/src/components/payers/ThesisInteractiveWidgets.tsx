@@ -15,6 +15,7 @@ import {
   Clock,
   Lock,
   Unlock,
+  Ban,
   Sparkles,
   UserCheck,
   CreditCard,
@@ -382,7 +383,7 @@ export interface ThesisMilestoneStage {
   chapterTag: string;
   linkedCuotaNum: number;
   linkedCuota: any | null;
-  status: 'COMPLETADO' | 'EN_CURSO' | 'BLOQUEADO_HITO';
+  status: 'COMPLETADO' | 'EN_CURSO' | 'BLOQUEADO_HITO' | 'ANULADA';
 }
 
 export interface ThesisJourneyTrackProps {
@@ -474,9 +475,12 @@ export function buildThesisStages(cuotas: any[]): ThesisMilestoneStage[] {
     const cuotaNum = Number(targetCuota?.numero_cuota || Math.min(3, Math.ceil((idx + 1) / 2)));
     const rawEstado = String(targetCuota?.estado || 'ESPERA_HITO');
 
-    let status: 'COMPLETADO' | 'EN_CURSO' | 'BLOQUEADO_HITO' = 'BLOQUEADO_HITO';
+    let status: 'COMPLETADO' | 'EN_CURSO' | 'BLOQUEADO_HITO' | 'ANULADA' =
+      'BLOQUEADO_HITO';
     if (rawEstado === 'PAGADA') {
       status = 'COMPLETADO';
+    } else if (rawEstado === 'ANULADA') {
+      status = 'ANULADA';
     } else if (idx === 1 && sortedCuotas[0]?.estado === 'PAGADA' && totalC >= 3) {
       // Si la Cuota #1 ya fue pagada, el Capítulo 1 y el arranque del Marco Teórico están habilitados/avanzados
       status = rawEstado === 'ESPERA_HITO' ? 'EN_CURSO' : 'EN_CURSO';
@@ -540,6 +544,7 @@ export function ThesisJourneyTrack({
     const activeStage =
       stages.find((s) => s.status === 'EN_CURSO') ||
       stages.find((s) => s.status === 'BLOQUEADO_HITO') ||
+      stages.find((s) => s.status === 'ANULADA') ||
       stages[stages.length - 1];
     if (activeStage) {
       setSelectedStageId(activeStage.id);
@@ -578,6 +583,7 @@ export function ThesisJourneyTrack({
     stages.find((s) => s.id === selectedStageId) || stages[0];
   const selectedCuota = selectedStage?.linkedCuota;
   const isCuotaPagada = selectedCuota?.estado === 'PAGADA';
+  const isCuotaAnulada = selectedCuota?.estado === 'ANULADA';
   const isCuotaEsperaHito = selectedCuota?.estado === 'ESPERA_HITO';
 
   const handleStageSelect = (stage: ThesisMilestoneStage) => {
@@ -632,6 +638,12 @@ export function ThesisJourneyTrack({
             <span className="w-2 h-2 rounded-full bg-amber-500" />
             Candado por Hito (Asesor)
           </span>
+          {stages.some((s) => s.status === 'ANULADA') && (
+            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-rose-500/10 text-rose-700 dark:text-rose-300 border border-rose-500/25">
+              <span className="w-2 h-2 rounded-full bg-rose-500" />
+              Cuota Anulada (RN-12)
+            </span>
+          )}
         </div>
       </div>
 
@@ -759,6 +771,7 @@ export function ThesisJourneyTrack({
               const isSelected = stage.id === selectedStage.id;
               const isCompleted = stage.status === 'COMPLETADO';
               const isEnCurso = stage.status === 'EN_CURSO';
+              const isAnulada = stage.status === 'ANULADA';
               const isHighlightedByCuota =
                 activeCuotaHighlight != null &&
                 stage.linkedCuotaNum === activeCuotaHighlight;
@@ -779,16 +792,22 @@ export function ThesisJourneyTrack({
                         ? 'bg-emerald-500 text-white border-emerald-400 shadow-emerald-500/25'
                         : isEnCurso
                           ? 'bg-sky-500 text-white border-sky-300 shadow-sky-500/30 animate-pulse-glow'
-                          : 'bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300 border-amber-400/70 dark:border-amber-500/50'
+                          : isAnulada
+                            ? 'bg-rose-500/15 text-rose-600 dark:text-rose-400 border-rose-400/70 dark:border-rose-500/60'
+                            : 'bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300 border-amber-400/70 dark:border-amber-500/50'
                     } ${
                       isSelected || isHighlightedByCuota
-                        ? 'ring-4 ring-emerald-500/30 dark:ring-emerald-400/35 scale-105'
+                        ? isAnulada
+                          ? 'ring-4 ring-rose-500/30 dark:ring-rose-400/35 scale-105'
+                          : 'ring-4 ring-emerald-500/30 dark:ring-emerald-400/35 scale-105'
                         : ''
                     }`}
                   >
                     {/* Icono / Candado SVG Animado */}
                     {isCompleted ? (
                       <CheckCircle2 className="w-6 h-6" />
+                    ) : isAnulada ? (
+                      <Ban className="w-6 h-6" />
                     ) : (
                       <svg
                         viewBox="0 0 24 24"
@@ -821,7 +840,9 @@ export function ThesisJourneyTrack({
                           ? 'bg-emerald-950 text-emerald-300 border-emerald-400'
                           : isEnCurso
                             ? 'bg-sky-950 text-sky-200 border-sky-300'
-                            : 'bg-amber-500 text-slate-950 border-amber-300'
+                            : isAnulada
+                              ? 'bg-rose-600 text-white border-rose-300'
+                              : 'bg-amber-500 text-slate-950 border-amber-300'
                       }`}
                     >
                       C#{stage.linkedCuotaNum}
@@ -873,7 +894,9 @@ export function ThesisJourneyTrack({
                       ? 'bg-emerald-500/20 text-emerald-700 dark:text-emerald-300'
                       : selectedStage.status === 'EN_CURSO'
                         ? 'bg-sky-500/20 text-sky-700 dark:text-sky-300'
-                        : 'bg-amber-500/20 text-amber-700 dark:text-amber-300'
+                        : selectedStage.status === 'ANULADA'
+                          ? 'bg-rose-500/20 text-rose-700 dark:text-rose-300'
+                          : 'bg-amber-500/20 text-amber-700 dark:text-amber-300'
                   }`}
                 >
                   {selectedStage.status === 'COMPLETADO' ? (
@@ -883,6 +906,10 @@ export function ThesisJourneyTrack({
                   ) : selectedStage.status === 'EN_CURSO' ? (
                     <>
                       <Unlock className="w-3 h-3" /> EXIGIBLE · PASARELA DESBLOQUEADA
+                    </>
+                  ) : selectedStage.status === 'ANULADA' ? (
+                    <>
+                      <Ban className="w-3 h-3" /> ANULADA (RN_12) · COBRANZA CANCELADA
                     </>
                   ) : (
                     <>
@@ -917,7 +944,7 @@ export function ThesisJourneyTrack({
 
             {/* Controles Directos del Hito (Aprobar / Revertir + Ir a Pasarela) */}
             <div className="flex flex-wrap items-center gap-2.5 shrink-0">
-              {selectedCuota && !isCuotaPagada && onToggleHito && (
+              {selectedCuota && !isCuotaPagada && !isCuotaAnulada && onToggleHito && (
                 <motion.button
                   type="button"
                   whileHover={prefersReducedMotion ? undefined : { scale: 1.02 }}
@@ -986,13 +1013,17 @@ export function ThesisJourneyTrack({
                   strokeWidth="3"
                   strokeDasharray="5 6"
                   className={
-                    selectedStage.status !== 'BLOQUEADO_HITO'
-                      ? 'text-emerald-500/60 animate-dash-flow'
-                      : 'text-slate-300 dark:text-slate-700'
+                    selectedStage.status === 'ANULADA'
+                      ? 'text-rose-400/50 dark:text-rose-500/40'
+                      : selectedStage.status !== 'BLOQUEADO_HITO'
+                        ? 'text-emerald-500/60 animate-dash-flow'
+                        : 'text-slate-300 dark:text-slate-700'
                   }
                 />
                 {/* Partícula de energía viajando del nodo Asesor al nodo Mercado Pago */}
-                {selectedStage.status !== 'BLOQUEADO_HITO' && !prefersReducedMotion && (
+                {selectedStage.status !== 'BLOQUEADO_HITO' &&
+                  selectedStage.status !== 'ANULADA' &&
+                  !prefersReducedMotion && (
                   <motion.circle
                     key={`particle-${energyPulseKey}-${selectedStage.id}`}
                     cx="12"
@@ -1010,26 +1041,40 @@ export function ThesisJourneyTrack({
                 )}
               </svg>
               <span className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                <span className="px-2 py-0.5 rounded-full text-[9px] font-mono font-bold bg-white/90 dark:bg-slate-900/90 border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300">
-                  {selectedStage.status === 'BLOQUEADO_HITO'
-                    ? '🔒 Checkout retenido hasta conformidad'
-                    : '⚡ Hito validado ➔ Link Mercado Pago habilitado'}
+                <span
+                  className={`px-2 py-0.5 rounded-full text-[9px] font-mono font-bold bg-white/90 dark:bg-slate-900/90 border ${
+                    selectedStage.status === 'ANULADA'
+                      ? 'border-rose-300 dark:border-rose-700 text-rose-700 dark:text-rose-300'
+                      : 'border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300'
+                  }`}
+                >
+                  {selectedStage.status === 'ANULADA'
+                    ? '⛔ Cuota anulada (RN_12) — sin enlace ni cobro'
+                    : selectedStage.status === 'BLOQUEADO_HITO'
+                      ? '🔒 Checkout retenido hasta conformidad'
+                      : '⚡ Hito validado ➔ Link Mercado Pago habilitado'}
                 </span>
               </span>
             </div>
 
             <div
               className={`flex items-center gap-2 text-xs font-bold ${
-                selectedStage.status !== 'BLOQUEADO_HITO'
+                selectedStage.status !== 'BLOQUEADO_HITO' &&
+                selectedStage.status !== 'ANULADA'
                   ? 'text-emerald-700 dark:text-emerald-300'
-                  : 'text-slate-400 dark:text-slate-500'
+                  : selectedStage.status === 'ANULADA'
+                    ? 'text-rose-600 dark:text-rose-400'
+                    : 'text-slate-400 dark:text-slate-500'
               }`}
             >
               <span
                 className={`w-7 h-7 rounded-xl flex items-center justify-center ${
-                  selectedStage.status !== 'BLOQUEADO_HITO'
+                  selectedStage.status !== 'BLOQUEADO_HITO' &&
+                  selectedStage.status !== 'ANULADA'
                     ? 'bg-emerald-500/20 text-emerald-600 dark:text-emerald-400'
-                    : 'bg-slate-200 dark:bg-slate-800'
+                    : selectedStage.status === 'ANULADA'
+                      ? 'bg-rose-500/15 text-rose-500 dark:text-rose-400'
+                      : 'bg-slate-200 dark:bg-slate-800'
                 }`}
               >
                 <ShieldCheck className="w-4 h-4" />

@@ -11,6 +11,7 @@ import {
   Clock,
   Lock,
   Unlock,
+  Ban,
   BellRing,
   ExternalLink,
   RefreshCw,
@@ -231,7 +232,20 @@ export default function PayersCommandCenterPage() {
   // Cálculos dinámicos para la barra y anillo de progreso animado
   const montoComprometido = Number(orden?.monto_comprometido ?? 1620);
   const montoCobrado = Number(orden?.monto_cobrado ?? 0);
-  const saldoPendiente = Math.max(0, montoComprometido - montoCobrado);
+  const cuotasAnuladas = cuotas.filter((c) => c.estado === 'ANULADA');
+  const montoAnulado = cuotasAnuladas.reduce(
+    (acc, c) => acc + Number(c.monto_programado || 0),
+    0,
+  );
+  const ordenAnulada =
+    orden?.estado === 'ANULADA' ||
+    vistaAnalitica?.estado_orden === 'ANULADA' ||
+    (cuotasAnuladas.length > 0 &&
+      !cuotas.some((c) => c.estado !== 'PAGADA' && c.estado !== 'ANULADA'));
+  const saldoPendiente = Math.max(
+    0,
+    montoComprometido - montoCobrado - montoAnulado,
+  );
   const pctCobrado =
     montoComprometido > 0
       ? Math.min(100, Math.round((montoCobrado / montoComprometido) * 100))
@@ -255,7 +269,17 @@ export default function PayersCommandCenterPage() {
           Math.round((montoExigibleHoy / montoComprometido) * 100),
         )
       : 0;
-  const pctEsperaHito = Math.max(0, 100 - pctCobrado - pctExigible);
+  const pctAnulado =
+    montoComprometido > 0
+      ? Math.min(
+          Math.max(0, 100 - pctCobrado - pctExigible),
+          Math.round((montoAnulado / montoComprometido) * 100),
+        )
+      : 0;
+  const pctEsperaHito = Math.max(
+    0,
+    100 - pctCobrado - pctExigible - pctAnulado,
+  );
 
   // Anillo SVG (radio 36 -> circunferencia = 226.2)
   const circumference = 2 * Math.PI * 36;
@@ -527,7 +551,9 @@ export default function PayersCommandCenterPage() {
                 <div className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
                   {siguienteCuota
                     ? `Próx: Cuota #${siguienteCuota.numero_cuota} (${siguienteCuota.estado})`
-                    : '100% Liquidado'}
+                    : ordenAnulada
+                      ? 'Cuotas futuras anuladas (RN_12)'
+                      : '100% Liquidado'}
                 </div>
               </div>
             </motion.button>
@@ -615,7 +641,9 @@ export default function PayersCommandCenterPage() {
                 <div className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
                   {siguienteCuota?.estado === 'ESPERA_HITO'
                     ? `Cuota #${siguienteCuota.numero_cuota} bloqueada por hito`
-                    : 'Cuota habilitada para cobro'}
+                    : ordenAnulada
+                      ? 'Cobranza futura cancelada (RN_12)'
+                      : 'Cuota habilitada para cobro'}
                 </div>
               </div>
             </motion.button>
@@ -811,7 +839,13 @@ export default function PayersCommandCenterPage() {
                   <h3 className="text-base font-black text-slate-900 dark:text-white truncate">
                     {nombreEstudiante}
                   </h3>
-                  <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-700 dark:text-emerald-300">
+                  <span
+                    className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded-full ${
+                      ordenAnulada
+                        ? 'bg-rose-500/15 text-rose-700 dark:text-rose-300 border border-rose-500/30'
+                        : 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
+                    }`}
+                  >
                     {orden?.estado || vistaAnalitica?.estado_orden || 'ACTIVO'}
                   </span>
                 </div>
@@ -822,7 +856,11 @@ export default function PayersCommandCenterPage() {
                   · {universidadActual} ({carreraActual})
                 </p>
 
-                <div className="grid grid-cols-3 gap-2 pt-1 text-xs font-mono">
+                <div
+                  className={`grid ${
+                    montoAnulado > 0 ? 'grid-cols-2 sm:grid-cols-4' : 'grid-cols-3'
+                  } gap-2 pt-1 text-xs font-mono`}
+                >
                   <div>
                     <span className="text-[10px] text-slate-400 block font-sans">
                       Total
@@ -839,6 +877,16 @@ export default function PayersCommandCenterPage() {
                       S/ {montoCobrado.toFixed(0)}
                     </strong>
                   </div>
+                  {montoAnulado > 0 && (
+                    <div>
+                      <span className="text-[10px] text-rose-500 block font-sans">
+                        Anulado
+                      </span>
+                      <strong className="text-rose-600 dark:text-rose-400">
+                        S/ {montoAnulado.toFixed(0)}
+                      </strong>
+                    </div>
+                  )}
                   <div>
                     <span className="text-[10px] text-amber-500 block font-sans">
                       Pendiente
@@ -869,8 +917,15 @@ export default function PayersCommandCenterPage() {
                   className="bg-amber-500/70 transition-all duration-700 ease-out"
                   title={`Bloqueado en Espera de Hito: ${pctEsperaHito}%`}
                 />
+                {pctAnulado > 0 && (
+                  <div
+                    style={{ width: `${pctAnulado}%` }}
+                    className="bg-rose-500/80 transition-all duration-700 ease-out"
+                    title={`Anulado (RN_12): ${pctAnulado}%`}
+                  />
+                )}
               </div>
-              <div className="flex items-center justify-between text-[10px] font-semibold text-slate-500 dark:text-slate-400">
+              <div className="flex items-center justify-between flex-wrap gap-2 text-[10px] font-semibold text-slate-500 dark:text-slate-400">
                 <span className="inline-flex items-center gap-1">
                   <span className="w-2 h-2 rounded-full bg-emerald-500" /> Pagado ({pctCobrado}%)
                 </span>
@@ -880,6 +935,11 @@ export default function PayersCommandCenterPage() {
                 <span className="inline-flex items-center gap-1">
                   <span className="w-2 h-2 rounded-full bg-amber-500" /> Espera Hito ({pctEsperaHito}%)
                 </span>
+                {pctAnulado > 0 && (
+                  <span className="inline-flex items-center gap-1 text-rose-600 dark:text-rose-400">
+                    <span className="w-2 h-2 rounded-full bg-rose-500" /> Anulado ({pctAnulado}%)
+                  </span>
+                )}
               </div>
             </div>
           </div>
@@ -916,6 +976,7 @@ export default function PayersCommandCenterPage() {
               {cuotas.map((c: any) => {
                 const num = Number(c.numero_cuota);
                 const pagada = c.estado === 'PAGADA';
+                const anulada = c.estado === 'ANULADA';
                 const esperaHito = c.estado === 'ESPERA_HITO';
                 const isHighlighted = activeCuotaHighlight === num;
                 return (
@@ -924,12 +985,16 @@ export default function PayersCommandCenterPage() {
                     onMouseEnter={() => setActiveCuotaHighlight(num)}
                     className={`rounded-2xl border p-3 flex items-center justify-between gap-3 transition-all ${
                       isHighlighted
-                        ? 'ring-2 ring-emerald-500/50 border-emerald-500 bg-emerald-500/10 dark:bg-emerald-950/35'
+                        ? anulada
+                          ? 'ring-2 ring-rose-500/40 border-rose-500/70 bg-rose-500/10 dark:bg-rose-950/30'
+                          : 'ring-2 ring-emerald-500/50 border-emerald-500 bg-emerald-500/10 dark:bg-emerald-950/35'
                         : pagada
                           ? 'border-emerald-500/35 bg-emerald-500/5 dark:bg-emerald-950/20'
-                          : esperaHito
-                            ? 'border-slate-200/90 dark:border-slate-800 bg-white/70 dark:bg-slate-900/70'
-                            : 'border-sky-500/45 bg-sky-500/5 dark:bg-sky-950/25 shadow-xs'
+                          : anulada
+                            ? 'border-rose-500/35 bg-rose-500/5 dark:bg-rose-950/20 opacity-85'
+                            : esperaHito
+                              ? 'border-slate-200/90 dark:border-slate-800 bg-white/70 dark:bg-slate-900/70'
+                              : 'border-sky-500/45 bg-sky-500/5 dark:bg-sky-950/25 shadow-xs'
                     }`}
                   >
                     <div className="min-w-0 space-y-0.5">
@@ -937,21 +1002,33 @@ export default function PayersCommandCenterPage() {
                         <span className="text-xs font-black text-slate-900 dark:text-white">
                           Cuota #{num} ({Number(c.porcentaje || 0)}%)
                         </span>
-                        <span className="font-mono text-xs font-extrabold text-slate-800 dark:text-slate-200">
+                        <span
+                          className={`font-mono text-xs font-extrabold ${
+                            anulada
+                              ? 'line-through text-rose-500 dark:text-rose-400'
+                              : 'text-slate-800 dark:text-slate-200'
+                          }`}
+                        >
                           S/ {Number(c.monto_programado).toFixed(2)}
                         </span>
                         <span
                           className={`inline-flex items-center gap-1 text-[10px] font-extrabold px-2 py-0.5 rounded-full ${
                             pagada
                               ? 'bg-emerald-500/20 text-emerald-700 dark:text-emerald-300'
-                              : esperaHito
-                                ? 'bg-amber-500/20 text-amber-700 dark:text-amber-300'
-                                : 'bg-sky-500/20 text-sky-700 dark:text-sky-300'
+                              : anulada
+                                ? 'bg-rose-500/20 text-rose-700 dark:text-rose-300'
+                                : esperaHito
+                                  ? 'bg-amber-500/20 text-amber-700 dark:text-amber-300'
+                                  : 'bg-sky-500/20 text-sky-700 dark:text-sky-300'
                           }`}
                         >
                           {pagada ? (
                             <>
                               <CheckCircle2 className="w-3 h-3" /> PAGADA
+                            </>
+                          ) : anulada ? (
+                            <>
+                              <Ban className="w-3 h-3" /> ANULADA
                             </>
                           ) : esperaHito ? (
                             <>
@@ -965,16 +1042,19 @@ export default function PayersCommandCenterPage() {
                         </span>
                       </div>
                       <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
-                        {c.condicion} · Vence:{' '}
-                        {c.fecha_vencimiento
-                          ? new Date(c.fecha_vencimiento)
-                              .toISOString()
-                              .slice(0, 10)
-                          : 'Por hito académico'}
+                        {anulada
+                          ? 'Cuota cancelada (RN_12) — enlaces y recordatorios desactivados'
+                          : `${c.condicion} · Vence: ${
+                              c.fecha_vencimiento
+                                ? new Date(c.fecha_vencimiento)
+                                    .toISOString()
+                                    .slice(0, 10)
+                                : 'Por hito académico'
+                            }`}
                       </p>
                     </div>
 
-                    {!pagada && (
+                    {!pagada && !anulada && (
                       <button
                         type="button"
                         disabled={actionBusy === `cuota-${num}`}

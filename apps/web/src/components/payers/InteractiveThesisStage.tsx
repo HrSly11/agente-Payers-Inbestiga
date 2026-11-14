@@ -57,6 +57,12 @@ const STATUS_STYLES = {
     pct: 20,
     label: 'Espera de hito',
   },
+  ANULADA: {
+    halo: 'rgba(244,63,94,0.35)',
+    chip: 'border-rose-500/50 bg-rose-500/10 text-rose-700 dark:text-rose-300',
+    pct: 0,
+    label: 'Cuota anulada (RN_12)',
+  },
 } as const;
 
 export function InteractiveThesisStage({

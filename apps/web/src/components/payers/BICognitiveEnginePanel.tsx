@@ -48,6 +48,14 @@ function pseudoLatency(seed: number, base: number, spread: number) {
 
 function evaluateRule(orden: any, cuotas: any[], pagado: number, comprometido: number) {
   const estados = cuotas.map((c) => String(c.estado));
+  const tienePendientes = cuotas.some((c) => c.estado !== 'PAGADA' && c.estado !== 'ANULADA');
+  if (String(orden?.estado || '') === 'ANULADA' || (estados.includes('ANULADA') && !tienePendientes)) {
+    return {
+      code: 'RN-12',
+      name: 'Cuotas Pendientes Canceladas',
+      why: 'Las cuotas futuras pendientes fueron anuladas según RN_12 sin afectar los pagos confirmados.',
+    };
+  }
   if (comprometido > 0 && pagado >= comprometido) {
     return {
       code: 'RN-01',
@@ -113,28 +121,38 @@ export function BICognitiveEnginePanel({
     if (!last) last = toDate(orden?.fecha_creacion ?? orden?.created_at);
     const diasInactivo = last ? Math.max(0, Math.floor((Date.now() - last.getTime()) / DAY_MS)) : 0;
 
-    // Churn: inactividad (máx 40) + saldo sin pagar (máx 30) + tesis sin avance (máx 30)
-    const churn = Math.round(
-      Math.min(40, diasInactivo * 5) + (1 - pctPagado / 100) * 30 + (1 - avanceTesis / 100) * 30,
-    );
-
     const cuotaBloqueada = cuotas.find((c) => String(c.estado) === 'ESPERA_HITO');
     const cuotaExigible = cuotas.find((c) => String(c.estado) === 'EXIGIBLE');
+    const cuotasAnuladas = cuotas.filter((c) => String(c.estado) === 'ANULADA').length;
+    const montoAnulado = cuotas
+      .filter((c) => String(c.estado) === 'ANULADA')
+      .reduce((acc, c) => acc + Number(c.monto_programado || 0), 0);
     const proxima = cuotaExigible || cuotaBloqueada;
     const rule = evaluateRule(orden, cuotas, pagado, comprometido);
+    const ordenAnulada =
+      String(orden?.estado || '').toUpperCase() === 'ANULADA' ||
+      (cuotasAnuladas > 0 && !cuotaBloqueada && !cuotaExigible);
+    const ordenSaldada = comprometido > 0 && pagado >= comprometido;
+
+    // Churn: inactividad (máx 40) + saldo sin pagar (máx 30) + tesis sin avance (máx 30)
+    const churn = ordenAnulada
+      ? 0
+      : Math.round(
+          Math.min(40, diasInactivo * 5) + (1 - pctPagado / 100) * 30 + (1 - avanceTesis / 100) * 30,
+        );
 
     const creada = toDate(orden?.fecha_creacion ?? orden?.created_at);
     const diasDesdeOrden = creada ? Math.max(0, Math.round((Date.now() - creada.getTime()) / DAY_MS)) : null;
 
-    const ordenSaldada = comprometido > 0 && pagado >= comprometido;
     const p01Now = (COHORT_PAID / COHORT_TOTAL) * 100;
-    const p01After = ((COHORT_PAID + (ordenSaldada ? 0 : 1)) / COHORT_TOTAL) * 100;
+    const p01After = ((COHORT_PAID + (ordenSaldada || ordenAnulada ? 0 : 1)) / COHORT_TOTAL) * 100;
 
     return {
       orden,
       cuotas,
       comprometido,
       pagado,
+      montoAnulado,
       pctPagado,
       avanceTesis,
       diasInactivo,
@@ -144,6 +162,7 @@ export function BICognitiveEnginePanel({
       rule,
       diasDesdeOrden,
       ordenSaldada,
+      ordenAnulada,
       p01Now,
       p01After,
     };
@@ -154,8 +173,9 @@ export function BICognitiveEnginePanel({
   const churnText = m.churn > 70 ? 'text-rose-400' : m.churn >= 30 ? 'text-amber-400' : 'text-emerald-400';
   const churnLevel = m.churn > 70 ? 'ALTO' : m.churn >= 30 ? 'MEDIO' : 'BAJO';
 
-  const strategy =
-    m.ordenSaldada
+  const strategy = m.ordenAnulada
+    ? 'Cuotas pendientes canceladas (RN-12): el agente conserva los pagos confirmados y desactiva enlaces y recordatorios futuros.'
+    : m.ordenSaldada
       ? 'Orden saldada: el agente cierra el ciclo de cobranza y deriva al seguimiento académico.'
       : m.cuotaBloqueada
         ? m.churn > 70
@@ -165,7 +185,10 @@ export function BICognitiveEnginePanel({
           ? 'El agente escala a contacto humano y ofrece reprogramar la cuota exigible.'
           : 'El agente envía el enlace de Mercado Pago y da seguimiento en las ventanas de 4h, 12h y 24h.';
 
-  const cuotaEstado = String(m.proxima?.estado || (m.ordenSaldada ? 'PAGADA' : 'SIN_CUOTA'));
+  const cuotaEstado = String(
+    m.proxima?.estado ||
+      (m.ordenAnulada ? 'ANULADA' : m.ordenSaldada ? 'PAGADA' : 'SIN_CUOTA'),
+  );
   const locked = cuotaEstado === 'ESPERA_HITO';
 
   const sqlChecks = [
@@ -173,7 +196,9 @@ export function BICognitiveEnginePanel({
       table: 'INBESTIGA_TESIS.dbo.CUOTA',
       detail: m.proxima
         ? `Cuota #${m.proxima.numero_cuota} · S/ ${Number(m.proxima.monto_programado || 0).toFixed(2)}`
-        : 'Sin cuotas pendientes',
+        : m.ordenAnulada
+          ? 'Cuotas futuras anuladas (RN-12)'
+          : 'Sin cuotas pendientes',
       badge: cuotaEstado,
       ms: pseudoLatency(selectedOrdenId, 8, 9),
       locked,

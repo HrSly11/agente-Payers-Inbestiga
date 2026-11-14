@@ -32,6 +32,7 @@ import { SCENARIOS_PRUEBA } from '@/components/payers/PayersModule';
 const FILTROS = [
   { id: 'PENDIENTES', label: 'Pendientes' },
   { id: 'PAGADA', label: 'Pagadas' },
+  { id: 'ANULADA', label: 'Anuladas' },
   { id: 'TODAS', label: 'Todas' },
 ];
 
@@ -39,6 +40,7 @@ function estadoBadge(estado: string) {
   if (estado === 'PAGADA')
     return 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300';
   if (estado === 'PARCIAL') return 'bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-sky-300';
+  if (estado === 'ANULADA') return 'bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300';
   return 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300';
 }
 
@@ -619,8 +621,14 @@ function PayersLiveChatContent() {
 
   const filtradas = ordenes
     .filter((o) => {
-      if (filtro === 'PENDIENTES' && o.estado_orden === 'PAGADA') return false;
+      if (
+        filtro === 'PENDIENTES' &&
+        (o.estado_orden === 'PAGADA' || o.estado_orden === 'ANULADA')
+      ) {
+        return false;
+      }
       if (filtro === 'PAGADA' && o.estado_orden !== 'PAGADA') return false;
+      if (filtro === 'ANULADA' && o.estado_orden !== 'ANULADA') return false;
       const q = search.toLowerCase();
       return (
         !q ||
@@ -961,7 +969,13 @@ function PayersLiveChatContent() {
                     <span
                       key={c.cuota_id}
                       className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded font-semibold ${estadoBadge(
-                        c.estado === 'PAGADA' ? 'PAGADA' : c.estado === 'EXIGIBLE' ? 'PARCIAL' : 'PENDIENTE',
+                        c.estado === 'PAGADA'
+                          ? 'PAGADA'
+                          : c.estado === 'ANULADA'
+                            ? 'ANULADA'
+                            : c.estado === 'EXIGIBLE'
+                              ? 'PARCIAL'
+                              : 'PENDIENTE',
                       )}`}
                     >
                       <span>

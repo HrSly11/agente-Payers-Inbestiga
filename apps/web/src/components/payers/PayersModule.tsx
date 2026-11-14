@@ -116,6 +116,7 @@ export default function PayersModule({ vista }: { vista: PayersVista }) {
   const activeTab: PayersTab = VISTA_TO_TAB[vista];
   const [overview, setOverview] = useState<any>(null);
   const [loading, setLoading] = useState<boolean>(true);
+  const [overviewError, setOverviewError] = useState<string | null>(null);
   const [etlRunning, setEtlRunning] = useState<boolean>(false);
   const [statusBanner, setStatusBanner] = useState<string | null>(null);
 
@@ -175,11 +176,17 @@ export default function PayersModule({ vista }: { vista: PayersVista }) {
 
   const cargarOverview = async () => {
     setLoading(true);
+    setOverviewError(null);
     try {
       const res = await api.getPayersOverview();
       setOverview(res);
     } catch (err: any) {
       console.error('Error cargando overview PAYERS:', err);
+      setOverviewError(
+        err?.message
+          ? `No se pudo conectar con la API PAYERS (${err.message}). Verifica que NestJS esté activo en el puerto 4000 y reintenta.`
+          : 'No se pudo cargar el padrón PAYERS desde el servidor API.',
+      );
     } finally {
       setLoading(false);
     }
@@ -298,12 +305,15 @@ export default function PayersModule({ vista }: { vista: PayersVista }) {
 
   const handleRunEtl = async () => {
     setEtlRunning(true);
+    setOverviewError(null);
     try {
       const res = await api.runEtl();
       setStatusBanner(`✓ ETL ejecutado en ${res.duracionMs} ms: INBESTIGA_MART sincronizado.`);
       await cargarOverview();
     } catch (err: any) {
-      alert(`Error ejecutando ETL: ${err.message}`);
+      setOverviewError(
+        `Error ejecutando ETL (${err?.message || 'Failed to fetch'}). Verifica que el servidor API en :4000 esté activo y vuelve a intentar.`,
+      );
     } finally {
       setEtlRunning(false);
     }
@@ -436,6 +446,33 @@ export default function PayersModule({ vista }: { vista: PayersVista }) {
           </Link>
         </div>
       </div>
+
+      {/* Banner de error de conexión / carga */}
+      {overviewError && (
+        <div className="p-3.5 rounded-xl bg-rose-50 dark:bg-rose-950/60 border border-rose-300 dark:border-rose-800 flex items-center justify-between gap-3 text-xs font-bold text-rose-900 dark:text-rose-200">
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" />
+            <span>{overviewError}</span>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={cargarOverview}
+              disabled={loading}
+              className="px-3 py-1 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-[11px] font-bold cursor-pointer disabled:opacity-50"
+            >
+              {loading ? 'Reintentando...' : 'Reintentar'}
+            </button>
+            <button
+              type="button"
+              onClick={() => setOverviewError(null)}
+              className="text-[11px] underline opacity-80 hover:opacity-100 cursor-pointer"
+            >
+              Cerrar
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Banner de notificación en vivo */}
       {statusBanner && (
@@ -859,10 +896,20 @@ export default function PayersModule({ vista }: { vista: PayersVista }) {
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
               <div>
                 <h3 className="font-heading text-base font-black text-slate-900 dark:text-white">
-                  Padrón Completo de 104 Órdenes de Pago (Cohorte Agosto–Octubre 2026)
+                  Padrón Completo de {ordenesDetalle.length} Órdenes de Pago (Cohorte Agosto–Octubre 2026)
                 </h3>
                 <p className="text-xs text-slate-500">
-                  86 órdenes con pago confirmado (P01 = 82.7%) y 18 órdenes en seguimiento/escalamiento.
+                  {ordenesDetalle.length > 0
+                    ? (() => {
+                        const conAbono = ordenesDetalle.filter((o) => Number(o.monto_cobrado || 0) > 0).length;
+                        const anuladas = ordenesDetalle.filter((o) => o.estado_orden === 'ANULADA').length;
+                        const sinAbono = ordenesDetalle.length - conAbono;
+                        const p01 = ((conAbono / ordenesDetalle.length) * 100).toFixed(1);
+                        return `${conAbono} órdenes con pago confirmado (P01 = ${p01}%), ${anuladas} anulada(s) y ${sinAbono} sin pago confirmado.`;
+                      })()
+                    : overviewError
+                      ? 'Sin conexión con la API PAYERS — usa el botón Reintentar para cargar el padrón.'
+                      : 'Cargando órdenes desde INBESTIGA_MART...'}
                 </p>
               </div>
 
@@ -899,6 +946,7 @@ export default function PayersModule({ vista }: { vista: PayersVista }) {
                   <option value="PARCIAL">PARCIAL</option>
                   <option value="ENLACE_ENVIADO">ENLACE_ENVIADO</option>
                   <option value="VENCIDA">VENCIDA</option>
+                  <option value="ANULADA">ANULADA</option>
                 </select>
               </div>
             </div>
@@ -956,7 +1004,9 @@ export default function PayersModule({ vista }: { vista: PayersVista }) {
                               ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300'
                               : o.estado_orden === 'PARCIAL'
                                 ? 'bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-sky-300'
-                                : 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300'
+                                : o.estado_orden === 'ANULADA'
+                                  ? 'bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300'
+                                  : 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300'
                           }`}
                         >
                           {o.estado_orden}
@@ -985,6 +1035,26 @@ export default function PayersModule({ vista }: { vista: PayersVista }) {
                       </td>
                     </tr>
                   ))}
+                  {ordenesFiltradas.length === 0 && (
+                    <tr>
+                      <td colSpan={9} className="py-8 px-4 text-center text-xs text-slate-500 dark:text-slate-400">
+                        {overviewError ? (
+                          <div className="flex flex-col items-center gap-2">
+                            <span>No se pudieron obtener las órdenes desde el servidor API (:4000).</span>
+                            <button
+                              type="button"
+                              onClick={cargarOverview}
+                              className="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs cursor-pointer"
+                            >
+                              Reintentar conexión
+                            </button>
+                          </div>
+                        ) : (
+                          'No hay órdenes que coincidan con los filtros seleccionados.'
+                        )}
+                      </td>
+                    </tr>
+                  )}
                 </tbody>
               </table>
             </div>
@@ -1076,6 +1146,15 @@ export default function PayersModule({ vista }: { vista: PayersVista }) {
                       </tr>
                     );
                   })}
+                  {vouchers.length === 0 && (
+                    <tr>
+                      <td colSpan={6} className="py-6 px-4 text-center text-xs text-slate-500 dark:text-slate-400">
+                        {overviewError
+                          ? 'No se pudieron cargar los vouchers por falta de conexión con la API (:4000).'
+                          : 'No hay vouchers registrados en este momento.'}
+                      </td>
+                    </tr>
+                  )}
                 </tbody>
               </table>
             </div>
