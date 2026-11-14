@@ -60,21 +60,50 @@ export class BusinessRulesService implements OnModuleInit {
             ('RN_07_UMBRAL_TURNITIN_MAX_PCT', N'Umbral Máximo de Similitud Turnitin (%)', 'ACADEMICO', 'PERCENT', '15.0', N'Porcentaje máximo de similitud admitido por SUNEDU y UNT para aprobar informe final de tesis.', 1),
             ('RN_08_ALERTA_RECORDATORIO_HRS', N'Frecuencia de Recordatorio de Cuota (Horas)', 'COBRANZA', 'NUMBER', '4', N'Tiempo en horas tras emisión del enlace antes de disparar el primer aviso automático de pago.', 1),
             ('RN_09_EXPIRACION_LINK_PAGO_HRS', N'Vigencia de Enlaces de Pago (Horas)', 'PASARELA', 'NUMBER', '72', N'Tiempo de caducidad de las preferencias y links generados en Mercado Pago y Culqi.', 1),
-            ('RN_10_BLOQUEO_SUSTENTACION', N'Candado Financiero para Sustentación', 'ACADEMICO', 'BOOLEAN', 'true', N'Bloquea el dictamen de expedito para sustentación de tesis si el alumno mantiene saldo pendiente.', 1);
+            ('RN_10_BLOQUEO_SUSTENTACION', N'Candado Financiero para Sustentación', 'ACADEMICO', 'BOOLEAN', 'true', N'Bloquea el dictamen de expedito para sustentación de tesis si el alumno mantiene saldo pendiente.', 1),
+            ('RN_11_PERMITIR_ANULACION_PAGO', N'Permitir Anulación de Pagos Confirmados', 'FINANCIERO', 'BOOLEAN', 'true', N'Habilita al administrador o asesor de Caja anular un pago confirmado (reversa contable), revirtiendo la cuota a exigible y recalculando la orden y el Data Mart.', 1),
+            ('RN_12_CANCELAR_CUOTAS_PENDIENTES', N'Permitir Cancelación de Cuotas Pendientes', 'FINANCIERO', 'BOOLEAN', 'true', N'Habilita cancelar o anular cuotas pendientes futuras (EXIGIBLE, ESPERA_HITO, ENLACE_ENVIADO, VENCIDA) cuando el estudiante desiste o lo solicita administración, deteniendo enlaces y recordatorios sin revertir pagos ya confirmados.', 1);
         `);
-        this.logger.log('✓ Tabla REGLA_NEGOCIO inicializada y poblada con 11 reglas maestras en SQL Server.');
+        this.logger.log('✓ Tabla REGLA_NEGOCIO inicializada y poblada con 13 reglas maestras en SQL Server.');
+      } else {
+        await this.prisma.$executeRawUnsafe(`
+          IF NOT EXISTS (SELECT 1 FROM INBESTIGA_TESIS.dbo.REGLA_NEGOCIO WHERE codigo = 'RN_11_PERMITIR_ANULACION_PAGO')
+          BEGIN
+            INSERT INTO INBESTIGA_TESIS.dbo.REGLA_NEGOCIO (codigo, nombre, modulo, tipo_dato, valor, descripcion, activo)
+            VALUES ('RN_11_PERMITIR_ANULACION_PAGO', N'Permitir Anulación de Pagos Confirmados', 'FINANCIERO', 'BOOLEAN', 'true', N'Habilita al administrador o asesor de Caja anular un pago confirmado (reversa contable), revirtiendo la cuota a exigible y recalculando la orden y el Data Mart.', 1);
+          END
+          IF NOT EXISTS (SELECT 1 FROM INBESTIGA_TESIS.dbo.REGLA_NEGOCIO WHERE codigo = 'RN_12_CANCELAR_CUOTAS_PENDIENTES')
+          BEGIN
+            INSERT INTO INBESTIGA_TESIS.dbo.REGLA_NEGOCIO (codigo, nombre, modulo, tipo_dato, valor, descripcion, activo)
+            VALUES ('RN_12_CANCELAR_CUOTAS_PENDIENTES', N'Permitir Cancelación de Cuotas Pendientes', 'FINANCIERO', 'BOOLEAN', 'true', N'Habilita cancelar o anular cuotas pendientes futuras (EXIGIBLE, ESPERA_HITO, ENLACE_ENVIADO, VENCIDA) cuando el estudiante desiste o lo solicita administración, deteniendo enlaces y recordatorios sin revertir pagos ya confirmados.', 1);
+          END
+        `);
       }
 
-      // Alinear el prompt de CONFIGURACION_AGENTE exclusivamente al dominio PAYERS v2.0
+      // Permitir estado ANULADO en PAGO si el constraint aún no lo contempla
+      await this.prisma.$executeRawUnsafe(`
+        IF EXISTS (
+          SELECT 1 FROM INBESTIGA_TESIS.sys.check_constraints
+          WHERE name = 'CK_PAGO_ESTADO' AND definition NOT LIKE '%ANULADO%'
+        )
+        BEGIN
+          ALTER TABLE INBESTIGA_TESIS.dbo.PAGO DROP CONSTRAINT CK_PAGO_ESTADO;
+          ALTER TABLE INBESTIGA_TESIS.dbo.PAGO WITH CHECK ADD CONSTRAINT CK_PAGO_ESTADO
+            CHECK (estado IN ('INICIADO', 'POR_VERIFICAR', 'CONFIRMADO', 'RECHAZADO', 'OBSERVADO', 'REEMBOLSADO', 'ANULADO'));
+        END
+      `);
+
+      // Limpiar únicamente prompts legacy con reglas hardcodeadas; respetar ediciones del administrador
       await this.prisma.$executeRawUnsafe(`
         UPDATE [dbo].[CONFIGURACION_AGENTE]
-        SET 
-          promptSistema = N'Eres el Agente Especialista de Cobranza y Activación Académica (PAYERS v2.0) de INBESTIGA.TESIS. Tu misión es gestionar el cobro de órdenes provenientes de HANDOFF_LEADS, facilitar enlaces oficiales de Mercado Pago Checkout Pro, estructurar cuotas sobre el saldo comprometido y activar el servicio académico tras el primer pago verificado.\nREGLAS ESTRICTAS DE PAYERS:\n1. RN-01 (Cero Alucinación): Jamás des por confirmado un pago por dichos del chat; verifica determinísticamente en PAGO y EVENTO_WEBHOOK.\n2. RN-02 (Precio Congelado): Prohibido negociar precios o descuentos en PAYERS. Si el estudiante solicita rebaja sobre el monto comprometido, escala y devuelve el caso a LEADS.\n3. RN-03 (Cuotas): Permite fraccionar en 3 cuotas (30/40/30) o reestructurar saldos pendientes hasta en 6 cuotas sin alterar el precio final.\n4. RN-04 (Activación): Al acreditarse la Cuota 1, activa automáticamente PAYER + CUSTOMER y asigna asesor especialista por balanceo de carga.\n5. RN-05 (Medios de Pago): Emite enlaces oficiales de Mercado Pago Checkout Pro; para montos mayores a S/ 500 indica pasarela con tarjeta.',
-          tono = N'Profesional, empático, financiero-académico y determinístico',
-          estilo = N'Especialista de Cobranza y Activación PAYERS v2.0',
-          permitirNegociacion = 0,
-          maxDescuentoNegociablePct = 0.00,
-          maxCuotasNegociables = 6
+        SET
+          proveedorIA = CASE WHEN proveedorIA = 'GEMINI' AND promptSistema LIKE '%REGLAS ESTRICTAS DE PAYERS%' THEN 'OPENAI' ELSE proveedorIA END,
+          modelo = CASE WHEN modelo = 'gemini-1.5-flash' AND promptSistema LIKE '%REGLAS ESTRICTAS DE PAYERS%' THEN 'gpt-4o-mini' ELSE modelo END,
+          promptSistema = CASE
+            WHEN promptSistema IS NULL OR LTRIM(RTRIM(promptSistema)) = '' OR promptSistema LIKE '%REGLAS ESTRICTAS DE PAYERS%'
+            THEN N'Eres el Asesor Virtual Especialista de Cobranza y Activación Académica de INBESTIGA.TESIS. Tu misión es acompañar cordialmente al estudiante que ya aceptó su cotización, guiarlo a completar su pago por los canales oficiales (Mercado Pago Checkout Pro o transferencia bancaria verificada), explicarle con claridad sus facilidades de pago y acompañar la activación de su servicio académico. Comunícate siempre con calidez humana, claridad ejecutiva y respeto estricto de las políticas y reglas vigentes configuradas en el sistema.'
+            ELSE promptSistema
+          END
         WHERE activo = 1;
       `);
     } catch (err: any) {
@@ -123,6 +152,48 @@ export class BusinessRulesService implements OnModuleInit {
       return regla.valor === 'true' || regla.valor === '1';
     }
     return regla.valor;
+  }
+
+  /** Retorna todas las reglas activas en tiempo real directamente desde SQL Server (sin caché). */
+  async getReglasActivas(): Promise<any[]> {
+    const todas = await this.findAll();
+    return todas.filter((r) => r.activo);
+  }
+
+  /** Evalúa inmediatamente si una regla booleana existe, está activa y habilitada. */
+  async isReglaHabilitada(codigo: string, defaultVal = false): Promise<boolean> {
+    const regla = await this.findByCodigo(codigo);
+    if (!regla) return defaultVal;
+    if (!regla.activo) return false;
+    const norm = String(regla.valor || '').trim().toLowerCase();
+    return norm === 'true' || norm === '1' || norm === 'si' || norm === 'sí';
+  }
+
+  /** Retorna el umbral numérico vigente; si la regla fue desactivada, devuelve fallbackIfInactive. */
+  async getValorNumerico(
+    codigo: string,
+    defaultVal: number,
+    fallbackIfInactive: number = defaultVal,
+  ): Promise<number> {
+    const regla = await this.findByCodigo(codigo);
+    if (!regla) return defaultVal;
+    if (!regla.activo) return fallbackIfInactive;
+    const parsed = Number(regla.valor);
+    return Number.isFinite(parsed) ? parsed : defaultVal;
+  }
+
+  /** Formatea todas las reglas activas en tiempo real para inyectarlas al prompt del Agente IA. */
+  async formatReglasActivasParaAgente(): Promise<string> {
+    const activas = await this.getReglasActivas();
+    if (activas.length === 0) {
+      return '- No hay reglas de negocio activas configuradas actualmente.';
+    }
+    return activas
+      .map(
+        (r) =>
+          `- [${r.modulo}] ${r.nombre} (${r.codigo}) = ${r.valor}${r.descripcion ? `: ${r.descripcion}` : ''}`,
+      )
+      .join('\n');
   }
 
   async create(dto: ReglaNegocioDto) {

@@ -15,14 +15,19 @@ export class DwService {
   async runEtl(): Promise<{ exito: boolean; mensaje: string; duracionMs: number; timestamp: string }> {
     const inicio = Date.now();
     try {
-      this.logger.log('Iniciando ejecución de orquestador ETL hacia los Data Marts y INBESTIGA_MART...');
-      await this.prisma.$executeRawUnsafe(`EXEC inbestiga_db.dbo.sp_etl_populate_datamarts;`);
+      this.logger.log('Iniciando ejecución de orquestador ETL hacia INBESTIGA_MART y Data Marts...');
+      await this.prisma.$executeRawUnsafe(`
+        IF OBJECT_ID('INBESTIGA_MART.dbo.sp_etl_sync_inbestiga_mart', 'P') IS NOT NULL
+          EXEC INBESTIGA_MART.dbo.sp_etl_sync_inbestiga_mart;
+        IF OBJECT_ID('inbestiga_db.dbo.sp_etl_populate_datamarts', 'P') IS NOT NULL
+          EXEC inbestiga_db.dbo.sp_etl_populate_datamarts;
+      `);
       const duracionMs = Date.now() - inicio;
       this.logger.log(`ETL completado exitosamente en ${duracionMs} ms.`);
       return {
         exito: true,
         mensaje:
-          'Proceso ETL completado con éxito. INBESTIGA_MART (04_ETL_POBLAR_DATAMART_DEFINITIVO) y los 4 Data Marts han sido sincronizados.',
+          'Proceso ETL completado con éxito. INBESTIGA_MART (Modalidades, Servicios, Cobranza y Pagos) ha sido sincronizado desde INBESTIGA_TESIS.',
         duracionMs,
         timestamp: new Date().toISOString(),
       };
