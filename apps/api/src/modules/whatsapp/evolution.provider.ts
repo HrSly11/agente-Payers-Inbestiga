@@ -78,11 +78,15 @@ export class EvolutionProvider {
         return { ok: true, creada: false, estado };
       }
 
-      await this.client.post('/instance/create', {
-        instanceName: this.instanceName,
-        integration: 'WHATSAPP-BAILEYS',
-        qrcode: true,
-      });
+      await this.client.post(
+        '/instance/create',
+        {
+          instanceName: this.instanceName,
+          integration: 'WHATSAPP-BAILEYS',
+          qrcode: true,
+        },
+        { timeout: 3500 },
+      );
       this.logger.log(`✓ [Evolution] Instancia "${this.instanceName}" creada en ${this.baseUrl}.`);
       return { ok: true, creada: true };
     } catch (error: any) {
@@ -98,7 +102,9 @@ export class EvolutionProvider {
   async getConnectionState(): Promise<string | null> {
     if (!this.configured) return null;
     try {
-      const res = await this.client.get(`/instance/connectionState/${this.instanceName}`);
+      const res = await this.client.get(`/instance/connectionState/${this.instanceName}`, {
+        timeout: 3500,
+      });
       return res.data?.instance?.state || res.data?.state || null;
     } catch {
       return null;

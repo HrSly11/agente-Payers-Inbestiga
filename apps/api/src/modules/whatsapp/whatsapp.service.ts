@@ -12,8 +12,8 @@ export class WhatsAppService implements OnModuleInit {
   ) {}
 
   /**
-   * Al arrancar el backend: asegura la instancia en Evolution API y registra
-   * el webhook para que los mensajes entrantes lleguen a /api/v1/whatsapp/webhook.
+   * Al arrancar el backend: inicia la verificación de Evolution API en segundo plano
+   * sin bloquear el arranque del servidor HTTP ni los demás módulos.
    */
   async onModuleInit() {
     if (!this.evolution.configured) {
@@ -23,21 +23,29 @@ export class WhatsAppService implements OnModuleInit {
       return;
     }
 
-    const ensure = await this.evolution.ensureInstance();
-    if (!ensure.ok) return;
+    void this.inicializarEvolutionEnSegundoPlano();
+  }
 
-    const port = process.env.API_PORT || process.env.PORT || 4000;
-    const webhookUrl =
-      process.env.WHATSAPP_WEBHOOK_URL || `http://host.docker.internal:${port}/api/v1/whatsapp/webhook`;
-    await this.evolution.setWebhook(webhookUrl);
+  private async inicializarEvolutionEnSegundoPlano() {
+    try {
+      const ensure = await this.evolution.ensureInstance();
+      if (!ensure.ok) return;
 
-    const status = await this.evolution.getSessionStatus();
-    if (status.conectado) {
-      this.logger.log('✓ WhatsApp (Evolution API) conectado y escuchando mensajes.');
-    } else {
-      this.logger.warn(
-        `WhatsApp (Evolution API) sin sesión activa (estado: ${status.status}). Escanea el QR en GET /api/v1/whatsapp/status.`,
-      );
+      const port = process.env.API_PORT || process.env.PORT || 4000;
+      const webhookUrl =
+        process.env.WHATSAPP_WEBHOOK_URL || `http://host.docker.internal:${port}/api/v1/whatsapp/webhook`;
+      await this.evolution.setWebhook(webhookUrl);
+
+      const status = await this.evolution.getSessionStatus();
+      if (status.conectado) {
+        this.logger.log('✓ WhatsApp (Evolution API) conectado y escuchando mensajes.');
+      } else {
+        this.logger.warn(
+          `WhatsApp (Evolution API) sin sesión activa (estado: ${status.status}). Escanea el QR en GET /api/v1/whatsapp/status.`,
+        );
+      }
+    } catch (err: any) {
+      this.logger.warn(`Evolution API omitido en arranque: ${err?.message || err}`);
     }
   }
 
